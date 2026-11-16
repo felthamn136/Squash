@@ -2,6 +2,8 @@ use macroquad::prelude::*;
 
 const WINDOW_WIDTH: i32 = 800;
 const WINDOW_HEIGHT: i32 = 600;
+const GAME_WIDTH: f32 = WINDOW_WIDTH as f32;
+const GAME_HEIGHT: f32 = WINDOW_HEIGHT as f32;
 const LEFT_BAR_WIDTH: f32 = 12.0;
 const TOP_DASH_WIDTH: f32 = 28.0;
 const TOP_DASH_GAP: f32 = 18.0;
@@ -9,6 +11,8 @@ const TOP_DASH_HEIGHT: f32 = 12.0;
 const RIGHT_MARKER_OFFSET: f32 = 133.0;
 const RIGHT_MARKER_HEIGHT: f32 = 82.0;
 const RIGHT_MARKER_WIDTH: f32 = 10.0;
+const PADDLE_COLUMN_X: f32 = WINDOW_WIDTH as f32 - RIGHT_MARKER_OFFSET;
+const SECOND_PADDLE_WIDTH: f32 = RIGHT_MARKER_WIDTH;
 const PADDLE_SPEED: f32 = 300.0;
 const BALL_SIZE: f32 = 14.0;
 const BALL_HORIZONTAL_SPEED: f32 = 300.0;
@@ -20,9 +24,33 @@ const MAX_BOUNCE_ANGLE: f32 = 0.9;
 const CURVE_ACCELERATION: f32 = 600.0;
 const SCANLINE_SPACING: f32 = 4.0;
 const PHOSPHOR: Color = Color::new(0.82, 0.54, 0.18, 1.0);
+const SECOND_PADDLE_PHOSPHOR: Color = Color::new(0.9, 0.64, 0.32, 1.0);
 const SCANLINE_COLOR: Color = Color::new(0.045, 0.028, 0.009, 1.0);
 const WALL_SCANLINE_COLOR: Color = Color::new(0.62, 0.42, 0.18, 1.0);
 const PADDLE_SCANLINE_COLOR: Color = Color::new(0.58, 0.39, 0.14, 1.0);
+const SECOND_PADDLE_SCANLINE_COLOR: Color = Color::new(0.7, 0.52, 0.28, 1.0);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Player {
+    One,
+    Two,
+}
+
+impl Player {
+    fn opponent(self) -> Self {
+        match self {
+            Self::One => Self::Two,
+            Self::Two => Self::One,
+        }
+    }
+
+    fn score_index(self) -> usize {
+        match self {
+            Self::One => 0,
+            Self::Two => 1,
+        }
+    }
+}
 
 struct Ball {
     x: f32,
@@ -31,6 +59,7 @@ struct Ball {
     vy: f32,
     spin: f32,
     moving: bool,
+    missed_by: Option<Player>,
     trail: Vec<Vec2>,
 }
 
@@ -43,6 +72,7 @@ impl Ball {
             vy: 0.0,
             spin: 0.0,
             moving: false,
+            missed_by: None,
             trail: Vec::new(),
         }
     }
@@ -54,6 +84,7 @@ impl Ball {
         self.vy = BALL_VERTICAL_SPEED;
         self.spin = 0.0;
         self.moving = true;
+        self.missed_by = None;
         self.trail.clear();
     }
 
@@ -61,12 +92,12 @@ impl Ball {
         *self = Self::new();
     }
 
-    fn return_from_paddle(&mut self, impact: f32, slice: bool, curve: bool) {
+    fn return_from_paddle(&mut self, impact: f32, slice: bool, curve: bool, toward_right: bool) {
         let speedup = if slice { SLICE_SPEEDUP } else { RALLY_SPEEDUP };
         let speed = (self.vx.hypot(self.vy) * speedup).min(MAX_BALL_SPEED);
         let angle_scale = if slice { 0.18 } else { MAX_BOUNCE_ANGLE };
         let angle = impact.clamp(-1.0, 1.0) * angle_scale;
-        self.vx = -speed * angle.cos();
+        self.vx = if toward_right { 1.0 } else { -1.0 } * speed * angle.cos();
         self.vy = speed * angle.sin();
         self.spin = if curve && !slice {
             if impact < 0.0 {
@@ -79,9 +110,16 @@ impl Ball {
         };
     }
 
-    fn update(&mut self, dt: f32, paddle_y: f32, slice: bool, curve: bool) {
+    fn update(
+        &mut self,
+        dt: f32,
+        second_paddle_y: f32,
+        right_paddle_y: f32,
+        slice: bool,
+        curve: bool,
+    ) -> Option<Player> {
         if !self.moving {
-            return;
+            return None;
         }
 
         let radius = BALL_SIZE / 2.0;
@@ -113,20 +151,44 @@ impl Ball {
             self.spin = -self.spin * 0.8;
         }
 
-        let paddle_x = WINDOW_WIDTH as f32 - RIGHT_MARKER_OFFSET;
-        let reached_paddle =
-            self.vx > 0.0 && previous_x + radius < paddle_x && self.x + radius >= paddle_x;
-        if reached_paddle {
-            let impact = (self.y - paddle_y) / (RIGHT_MARKER_HEIGHT / 2.0);
-            if impact.abs() <= 1.0 {
-                self.x = paddle_x - radius;
-                self.return_from_paddle(impact, slice, curve);
+        let reached_paddles = self.vx > 0.0
+            && previous_x + radius < PADDLE_COLUMN_X
+            && self.x + radius >= PADDLE_COLUMN_X;
+        if reached_paddles {
+            let second_impact = (self.y - second_paddle_y) / (RIGHT_MARKER_HEIGHT / 2.0);
+            let first_impact = (self.y - right_paddle_y) / (RIGHT_MARKER_HEIGHT / 2.0);
+            let (missed_player, impact) = if second_impact.abs() <= first_impact.abs() {
+                (Player::Two, second_impact)
             } else {
-                self.reset();
+                (Player::One, first_impact)
+            };
+            if impact.abs() <= 1.0 {
+                self.x = PADDLE_COLUMN_X - radius;
+                self.return_from_paddle(impact, slice, curve, false);
+            } else {
+                self.missed_by = Some(missed_player);
             }
-        } else if self.x - radius > paddle_x + RIGHT_MARKER_WIDTH {
-            self.reset();
+        } else if self.vx > 0.0
+            && self.missed_by.is_none()
+            && self.x - radius > PADDLE_COLUMN_X + SECOND_PADDLE_WIDTH
+        {
+            let second_impact = (self.y - second_paddle_y).abs();
+            let first_impact = (self.y - right_paddle_y).abs();
+            self.missed_by = Some(if second_impact <= first_impact {
+                Player::Two
+            } else {
+                Player::One
+            });
         }
+
+        if self.x - radius > GAME_WIDTH {
+            if let Some(missed_player) = self.missed_by {
+                let scoring_player = missed_player.opponent();
+                self.reset();
+                return Some(scoring_player);
+            }
+        }
+        None
     }
 }
 
@@ -135,9 +197,30 @@ fn window_conf() -> Conf {
         window_title: "Squash '76".to_owned(),
         window_width: WINDOW_WIDTH,
         window_height: WINDOW_HEIGHT,
-        window_resizable: false,
+        window_resizable: true,
         ..Default::default()
     }
+}
+
+fn fitted_viewport(screen_width: f32, screen_height: f32) -> (i32, i32, i32, i32) {
+    let scale = (screen_width / GAME_WIDTH).min(screen_height / GAME_HEIGHT);
+    let width = (GAME_WIDTH * scale).round().max(1.0) as i32;
+    let height = (GAME_HEIGHT * scale).round().max(1.0) as i32;
+    let x = ((screen_width.round() as i32) - width) / 2;
+    let y = ((screen_height.round() as i32) - height) / 2;
+    (x, y, width, height)
+}
+
+fn paddle_direction(up_pressed: bool, down_pressed: bool) -> f32 {
+    f32::from(up_pressed) - f32::from(down_pressed)
+}
+
+fn set_game_camera() -> (i32, i32, i32, i32) {
+    let viewport = fitted_viewport(screen_width(), screen_height());
+    let mut camera = Camera2D::from_display_rect(Rect::new(0.0, 0.0, GAME_WIDTH, GAME_HEIGHT));
+    camera.viewport = Some(viewport);
+    set_camera(&camera);
+    viewport
 }
 
 fn draw_ball(ball: &Ball) {
@@ -170,8 +253,15 @@ fn draw_ball(ball: &Ball) {
     );
 }
 
-fn draw_scanlined_rect(x: f32, y: f32, width: f32, height: f32, line_color: Color) {
-    draw_rectangle(x, y, width, height, PHOSPHOR);
+fn draw_scanlined_rect(
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    fill_color: Color,
+    line_color: Color,
+) {
+    draw_rectangle(x, y, width, height, fill_color);
     let mut line_y = y + 2.0;
     while line_y < y + height {
         draw_rectangle(x, line_y, width, 1.0, line_color);
@@ -179,33 +269,89 @@ fn draw_scanlined_rect(x: f32, y: f32, width: f32, height: f32, line_color: Colo
     }
 }
 
+fn draw_centered_text(text: &str, center_x: f32, baseline_y: f32, font_size: f32, color: Color) {
+    let dimensions = measure_text(text, None, font_size.max(1.0) as u16, 1.0);
+    draw_text(
+        text,
+        center_x - dimensions.width / 2.0,
+        baseline_y,
+        font_size.max(1.0),
+        color,
+    );
+}
+
+fn draw_scoreboard(scores: [u32; 2], viewport: (i32, i32, i32, i32)) {
+    let scale = viewport.2 as f32 / GAME_WIDTH;
+    let center_x = viewport.0 as f32 + viewport.2 as f32 / 2.0;
+    let top = viewport.1 as f32;
+    draw_centered_text(
+        "PLAYER 2",
+        center_x - 105.0 * scale,
+        top + 36.0 * scale,
+        26.0 * scale,
+        SECOND_PADDLE_PHOSPHOR,
+    );
+    draw_centered_text(
+        &scores[1].to_string(),
+        center_x - 105.0 * scale,
+        top + 108.0 * scale,
+        64.0 * scale,
+        SECOND_PADDLE_PHOSPHOR,
+    );
+    draw_centered_text(
+        "PLAYER 1",
+        center_x + 105.0 * scale,
+        top + 36.0 * scale,
+        26.0 * scale,
+        PHOSPHOR,
+    );
+    draw_centered_text(
+        &scores[0].to_string(),
+        center_x + 105.0 * scale,
+        top + 108.0 * scale,
+        64.0 * scale,
+        PHOSPHOR,
+    );
+}
+
 #[macroquad::main(window_conf)]
 async fn main() {
-    let mut paddle_y = screen_height() / 2.0;
+    let mut second_paddle_y = GAME_HEIGHT / 2.0 - RIGHT_MARKER_HEIGHT;
+    let mut right_paddle_y = GAME_HEIGHT / 2.0;
     let mut ball = Ball::new();
+    let mut scores = [0; 2];
 
     loop {
+        set_default_camera();
         clear_background(BLACK);
+        let viewport = set_game_camera();
         let dt = get_frame_time().min(0.04);
 
-        let direction = f32::from(is_key_down(KeyCode::S)) - f32::from(is_key_down(KeyCode::W));
-        paddle_y = (paddle_y + direction * PADDLE_SPEED * dt).clamp(
-            TOP_DASH_HEIGHT + RIGHT_MARKER_HEIGHT / 2.0,
-            screen_height() - TOP_DASH_HEIGHT - RIGHT_MARKER_HEIGHT / 2.0,
-        );
+        let top_bound = TOP_DASH_HEIGHT + RIGHT_MARKER_HEIGHT / 2.0;
+        let bottom_bound = GAME_HEIGHT - TOP_DASH_HEIGHT - RIGHT_MARKER_HEIGHT / 2.0;
+        let right_direction = paddle_direction(is_key_down(KeyCode::W), is_key_down(KeyCode::S));
+        right_paddle_y =
+            (right_paddle_y + right_direction * PADDLE_SPEED * dt).clamp(top_bound, bottom_bound);
+        let second_direction =
+            paddle_direction(is_key_down(KeyCode::Up), is_key_down(KeyCode::Down));
+        second_paddle_y =
+            (second_paddle_y + second_direction * PADDLE_SPEED * dt).clamp(top_bound, bottom_bound);
         if is_key_pressed(KeyCode::Space) && !ball.moving {
             ball.serve();
         }
-        ball.update(
+        if let Some(player) = ball.update(
             dt,
-            paddle_y,
+            second_paddle_y,
+            right_paddle_y,
             is_key_down(KeyCode::A),
             is_key_down(KeyCode::D),
-        );
+        ) {
+            scores[player.score_index()] += 1;
+        }
 
         let mut y = 2.0;
-        while y < screen_height() {
-            draw_rectangle(0.0, y, screen_width(), 1.0, SCANLINE_COLOR);
+        while y < GAME_HEIGHT {
+            draw_rectangle(0.0, y, GAME_WIDTH, 1.0, SCANLINE_COLOR);
             y += SCANLINE_SPACING;
         }
 
@@ -213,34 +359,54 @@ async fn main() {
             0.0,
             0.0,
             LEFT_BAR_WIDTH,
-            screen_height(),
+            GAME_HEIGHT,
+            PHOSPHOR,
             WALL_SCANLINE_COLOR,
         );
         let mut x = 0.0;
-        while x < screen_width() {
-            draw_scanlined_rect(x, 0.0, TOP_DASH_WIDTH, TOP_DASH_HEIGHT, WALL_SCANLINE_COLOR);
+        while x < GAME_WIDTH {
+            draw_scanlined_rect(
+                x,
+                0.0,
+                TOP_DASH_WIDTH,
+                TOP_DASH_HEIGHT,
+                PHOSPHOR,
+                WALL_SCANLINE_COLOR,
+            );
             x += TOP_DASH_WIDTH + TOP_DASH_GAP;
         }
-        let bottom_y = screen_height() - TOP_DASH_HEIGHT;
+        let bottom_y = GAME_HEIGHT - TOP_DASH_HEIGHT;
         let mut x = 0.0;
-        while x < screen_width() {
+        while x < GAME_WIDTH {
             draw_scanlined_rect(
                 x,
                 bottom_y,
                 TOP_DASH_WIDTH,
                 TOP_DASH_HEIGHT,
+                PHOSPHOR,
                 WALL_SCANLINE_COLOR,
             );
             x += TOP_DASH_WIDTH + TOP_DASH_GAP;
         }
         draw_scanlined_rect(
-            screen_width() - RIGHT_MARKER_OFFSET,
-            paddle_y - RIGHT_MARKER_HEIGHT / 2.0,
+            PADDLE_COLUMN_X,
+            second_paddle_y - RIGHT_MARKER_HEIGHT / 2.0,
+            SECOND_PADDLE_WIDTH,
+            RIGHT_MARKER_HEIGHT,
+            SECOND_PADDLE_PHOSPHOR,
+            SECOND_PADDLE_SCANLINE_COLOR,
+        );
+        draw_scanlined_rect(
+            PADDLE_COLUMN_X,
+            right_paddle_y - RIGHT_MARKER_HEIGHT / 2.0,
             RIGHT_MARKER_WIDTH,
             RIGHT_MARKER_HEIGHT,
+            PHOSPHOR,
             PADDLE_SCANLINE_COLOR,
         );
         draw_ball(&ball);
+        set_default_camera();
+        draw_scoreboard(scores, viewport);
         next_frame().await;
     }
 }
@@ -250,20 +416,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ball_rebounds_from_left_and_top_walls() {
+    fn ball_rebounds_from_top_wall_without_changing_horizontal_direction() {
         let mut ball = Ball {
-            x: LEFT_BAR_WIDTH + BALL_SIZE / 2.0 + 1.0,
+            x: 200.0,
             y: TOP_DASH_HEIGHT + BALL_SIZE / 2.0 + 1.0,
             vx: -100.0,
             vy: -100.0,
             spin: 0.0,
             moving: true,
+            missed_by: None,
             trail: Vec::new(),
         };
 
-        ball.update(0.04, WINDOW_HEIGHT as f32 / 2.0, false, false);
+        assert_eq!(
+            ball.update(
+                0.04,
+                WINDOW_HEIGHT as f32 / 2.0,
+                WINDOW_HEIGHT as f32 / 2.0,
+                false,
+                false,
+            ),
+            None
+        );
 
-        assert!(ball.vx > 0.0);
+        assert!(ball.vx < 0.0);
         assert!(ball.vy > 0.0);
     }
 
@@ -278,10 +454,11 @@ mod tests {
             vy: 0.0,
             spin: 0.0,
             moving: true,
+            missed_by: None,
             trail: Vec::new(),
         };
 
-        ball.update(0.04, paddle_y, false, false);
+        assert_eq!(ball.update(0.04, paddle_y, paddle_y, false, false), None);
 
         assert!(ball.moving);
         assert!(ball.vx < 0.0);
@@ -293,13 +470,13 @@ mod tests {
     fn paddle_hit_position_controls_pong_style_return_angle() {
         let mut center_hit = Ball::new();
         center_hit.vx = 300.0;
-        center_hit.return_from_paddle(0.0, false, false);
+        center_hit.return_from_paddle(0.0, false, false, false);
         assert!(center_hit.vx < 0.0);
         assert!(center_hit.vy.abs() < f32::EPSILON);
 
         let mut edge_hit = Ball::new();
         edge_hit.vx = 300.0;
-        edge_hit.return_from_paddle(2.0, false, false);
+        edge_hit.return_from_paddle(2.0, false, false, false);
         let edge_angle = edge_hit.vy.atan2(-edge_hit.vx);
         assert!((edge_angle - MAX_BOUNCE_ANGLE).abs() < 0.001);
     }
@@ -308,7 +485,7 @@ mod tests {
     fn slice_is_fast_and_stays_flat() {
         let mut ball = Ball::new();
         ball.vx = 300.0;
-        ball.return_from_paddle(1.0, true, false);
+        ball.return_from_paddle(1.0, true, false, false);
 
         assert!(ball.vx < 0.0);
         assert!(ball.vy.abs() < 60.0);
@@ -326,16 +503,89 @@ mod tests {
             vy: 0.0,
             spin: 0.0,
             moving: true,
+            missed_by: None,
             trail: Vec::new(),
         };
 
-        ball.update(0.04, paddle_y, false, true);
+        assert_eq!(ball.update(0.04, paddle_y, paddle_y, false, true), None);
         let curved_vy = ball.vy;
-        ball.update(0.04, paddle_y, false, false);
+        assert_eq!(ball.update(0.04, paddle_y, paddle_y, false, false), None);
 
         assert!(ball.spin > 0.0);
         assert!(ball.vy > curved_vy);
         assert!(ball.vx < 0.0);
         assert!(ball.x + BALL_SIZE / 2.0 <= paddle_x);
+    }
+
+    #[test]
+    fn second_paddle_in_shared_column_returns_ball_and_speeds_it_up() {
+        let paddle_y = WINDOW_HEIGHT as f32 / 2.0 - RIGHT_MARKER_HEIGHT;
+        let first_paddle_y = WINDOW_HEIGHT as f32 / 2.0;
+        let mut ball = Ball {
+            x: PADDLE_COLUMN_X - BALL_SIZE,
+            y: paddle_y,
+            vx: 300.0,
+            vy: 0.0,
+            spin: 0.0,
+            moving: true,
+            missed_by: None,
+            trail: Vec::new(),
+        };
+
+        assert_eq!(
+            ball.update(0.04, paddle_y, first_paddle_y, false, false),
+            None
+        );
+
+        assert!(ball.moving);
+        assert!(ball.vx < 0.0);
+        assert!(ball.vy.abs() < f32::EPSILON);
+        assert!(ball.vx.hypot(ball.vy) > 300.0);
+    }
+
+    #[test]
+    fn paddle_miss_awards_point_to_the_other_player() {
+        let second_paddle_y = WINDOW_HEIGHT as f32 / 2.0 - RIGHT_MARKER_HEIGHT;
+        let first_paddle_y = WINDOW_HEIGHT as f32 / 2.0;
+        let mut ball = Ball {
+            x: PADDLE_COLUMN_X - BALL_SIZE,
+            y: first_paddle_y + RIGHT_MARKER_HEIGHT * 1.2,
+            vx: 300.0,
+            vy: 0.0,
+            spin: 0.0,
+            moving: true,
+            missed_by: None,
+            trail: Vec::new(),
+        };
+
+        assert_eq!(
+            ball.update(0.04, second_paddle_y, first_paddle_y, false, false),
+            None
+        );
+        assert!(ball.moving);
+        assert_eq!(ball.missed_by, Some(Player::One));
+
+        let mut scoring_player = None;
+        for _ in 0..20 {
+            scoring_player = ball.update(0.04, second_paddle_y, first_paddle_y, false, false);
+            if scoring_player.is_some() {
+                break;
+            }
+        }
+
+        assert_eq!(scoring_player, Some(Player::Two));
+        assert!(!ball.moving);
+    }
+
+    #[test]
+    fn resized_viewport_preserves_aspect_ratio_and_centers_game() {
+        assert_eq!(fitted_viewport(1600.0, 900.0), (200, 0, 1200, 900));
+    }
+
+    #[test]
+    fn both_paddle_control_pairs_use_the_same_reversed_direction() {
+        assert_eq!(paddle_direction(true, false), 1.0);
+        assert_eq!(paddle_direction(false, true), -1.0);
+        assert_eq!(paddle_direction(false, false), 0.0);
     }
 }
