@@ -1,20 +1,9 @@
-# Squash '76
+# Squash '76 display
 
-A 1970s-inspired squash arcade game written in Rust.
+A minimal Rust window with a fixed 4:3 aspect ratio, black background, and subtle CRT scanlines.
 
-## Run
-
-Install Rust, then launch the game with:
+Run it with:
 
 ```sh
 cargo run
 ```
-
-Cargo downloads the `macroquad` game framework on the first build.
-
-## Play
-
-- Press **Enter** to serve or continue.
-- Move with **arrow keys** or **WASD**.
-- Press **Space** near the ball to swing.
-- First to 9 points wins. Press **Enter** after a match to start a rematch.
