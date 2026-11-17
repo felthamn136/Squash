@@ -1,3 +1,5 @@
+#![windows_subsystem = "windows"]
+
 use gilrs::{Axis, Button, EventType, Gilrs};
 use macroquad::audio::{load_sound_from_bytes, play_sound_once};
 use macroquad::prelude::*;

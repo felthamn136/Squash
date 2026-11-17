@@ -193,3 +193,16 @@ The x86_64 Linux AppImage is available at [dist/Squash-76-x86_64.AppImage](./dis
 ```
 
 The AppImage uses the host ALSA (`libasound.so.2`) and udev (`libudev.so.1`) runtime libraries.
+
+## Windows Installer
+
+On Linux, build the 64-bit Windows executable and NSIS installers with:
+
+```sh
+./packaging/windows/build-windows.sh
+```
+
+The build script requires Rust's `x86_64-pc-windows-gnu` target, MinGW-w64, NSIS, and Python Pillow. It produces:
+
+- `dist/Squash-76-Setup.exe`
+- `dist/Squash-76-Uninstaller.exe`
