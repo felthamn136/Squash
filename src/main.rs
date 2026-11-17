@@ -1,3 +1,5 @@
+use gilrs::{Axis, Button, EventType, Gilrs};
+use macroquad::audio::{load_sound_from_bytes, play_sound_once};
 use macroquad::prelude::*;
 
 const WINDOW_WIDTH: i32 = 800;
@@ -23,12 +25,19 @@ const MAX_BALL_SPEED: f32 = 620.0;
 const CURVE_ACCELERATION: f32 = 600.0;
 const GAME_POINT_LIMIT: u32 = 15;
 const SCANLINE_SPACING: f32 = 4.0;
-const PHOSPHOR: Color = Color::new(0.82, 0.54, 0.18, 1.0);
-const SECOND_PADDLE_PHOSPHOR: Color = Color::new(0.9, 0.64, 0.32, 1.0);
-const SCANLINE_COLOR: Color = Color::new(0.045, 0.028, 0.009, 1.0);
-const WALL_SCANLINE_COLOR: Color = Color::new(0.62, 0.42, 0.18, 1.0);
-const PADDLE_SCANLINE_COLOR: Color = Color::new(0.58, 0.39, 0.14, 1.0);
-const SECOND_PADDLE_SCANLINE_COLOR: Color = Color::new(0.7, 0.52, 0.28, 1.0);
+const BOUNCE_SAMPLE_RATE: u32 = 48_000;
+const BOUNCE_FREQUENCY_HZ: u32 = 1_200;
+const BOUNCE_DURATION_MS: u32 = 60;
+const BOUNCE_AMPLITUDE: i16 = 12_000;
+const IMPACT_FREQUENCIES_HZ: [u32; 2] = [900, 1_500];
+const IMPACT_DURATION_MS: u32 = 60;
+const SCORE_START_FREQUENCY_HZ: f32 = 1_600.0;
+const SCORE_END_FREQUENCY_HZ: f32 = 420.0;
+const SCORE_DURATION_MS: u32 = 250;
+const GAME_OVER_START_FREQUENCY_HZ: f32 = 240.0;
+const GAME_OVER_END_FREQUENCY_HZ: f32 = 85.0;
+const GAME_OVER_DURATION_MS: u32 = 280;
+const ALERT_AMPLITUDE: i16 = 12_000;
 const GAME_SPEEDS: [f32; 3] = [0.75, 1.0, 1.35];
 const GAME_SPEED_LABELS: [&str; 3] = ["SLOW", "NORMAL", "FAST"];
 const PADDLE_SIZES: [f32; 2] = [56.0, RIGHT_MARKER_HEIGHT];
@@ -38,6 +47,76 @@ const REBOUND_ANGLE_LABELS: [&str; 2] = ["SHALLOW 20", "STEEP 40"];
 const PLAYER_MODE_LABELS: [&str; 2] = ["1 PLAYER", "2 PLAYER"];
 const SERVE_MODE_LABELS: [&str; 2] = ["AUTO", "MANUAL"];
 const SCANLINE_LABELS: [&str; 2] = ["OFF", "ON"];
+const GAME_COLOR_LABELS: [&str; 3] = ["GREEN", "AMBER", "WHITE"];
+const CONTROL_MODE_LABELS: [&str; 2] = ["KEYBOARD", "JOYSTICK"];
+
+#[derive(Clone, Copy)]
+struct Palette {
+    primary: Color,
+    secondary: Color,
+    background_scanline: Color,
+    wall_scanline: Color,
+    paddle_scanline: Color,
+    second_paddle_scanline: Color,
+    highlight: Color,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GameColor {
+    Green,
+    Amber,
+    White,
+}
+
+impl GameColor {
+    fn from_index(index: usize) -> Self {
+        match index {
+            0 => Self::Green,
+            1 => Self::Amber,
+            _ => Self::White,
+        }
+    }
+
+    fn index(self) -> usize {
+        match self {
+            Self::Green => 0,
+            Self::Amber => 1,
+            Self::White => 2,
+        }
+    }
+
+    fn palette(self) -> Palette {
+        match self {
+            Self::Green => Palette {
+                primary: Color::new(0.34, 0.95, 0.48, 1.0),
+                secondary: Color::new(0.66, 1.0, 0.62, 1.0),
+                background_scanline: Color::new(0.012, 0.055, 0.018, 1.0),
+                wall_scanline: Color::new(0.22, 0.68, 0.32, 1.0),
+                paddle_scanline: Color::new(0.18, 0.62, 0.28, 1.0),
+                second_paddle_scanline: Color::new(0.38, 0.76, 0.42, 1.0),
+                highlight: Color::new(0.75, 1.0, 0.72, 1.0),
+            },
+            Self::Amber => Palette {
+                primary: Color::new(0.82, 0.54, 0.18, 1.0),
+                secondary: Color::new(0.9, 0.64, 0.32, 1.0),
+                background_scanline: Color::new(0.045, 0.028, 0.009, 1.0),
+                wall_scanline: Color::new(0.62, 0.42, 0.18, 1.0),
+                paddle_scanline: Color::new(0.58, 0.39, 0.14, 1.0),
+                second_paddle_scanline: Color::new(0.7, 0.52, 0.28, 1.0),
+                highlight: Color::new(0.95, 0.74, 0.39, 1.0),
+            },
+            Self::White => Palette {
+                primary: Color::new(0.92, 0.94, 1.0, 1.0),
+                secondary: Color::new(0.72, 0.78, 0.88, 1.0),
+                background_scanline: Color::new(0.035, 0.04, 0.055, 1.0),
+                wall_scanline: Color::new(0.72, 0.78, 0.88, 1.0),
+                paddle_scanline: Color::new(0.64, 0.7, 0.82, 1.0),
+                second_paddle_scanline: Color::new(0.54, 0.62, 0.75, 1.0),
+                highlight: Color::new(1.0, 1.0, 1.0, 1.0),
+            },
+        }
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Screen {
@@ -55,6 +134,27 @@ enum GameMode {
 enum ServeMode {
     Automatic,
     Manual,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ControlMode {
+    Keyboard,
+    Joystick,
+}
+
+#[derive(Default)]
+struct JoystickInput {
+    connected: bool,
+    player_one_y: f32,
+    player_two_y: f32,
+    player_one_up: bool,
+    player_one_down: bool,
+    player_two_up: bool,
+    player_two_down: bool,
+    serve_pressed: bool,
+    menu_pressed: bool,
+    slice_pressed: bool,
+    curve_pressed: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -88,7 +188,14 @@ struct Ball {
     speed_scale: f32,
     moving: bool,
     missed_by: Option<Player>,
+    bounce_this_frame: Option<BounceKind>,
     trail: Vec<Vec2>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BounceKind {
+    SideWall,
+    HardImpact,
 }
 
 impl Ball {
@@ -102,6 +209,7 @@ impl Ball {
             speed_scale: 1.0,
             moving: false,
             missed_by: None,
+            bounce_this_frame: None,
             trail: Vec::new(),
         }
     }
@@ -162,6 +270,7 @@ impl Ball {
         mode: GameMode,
         rebound_angle_degrees: f32,
     ) -> Option<Player> {
+        self.bounce_this_frame = None;
         if !self.moving {
             return None;
         }
@@ -185,15 +294,18 @@ impl Ball {
         if self.x - radius <= LEFT_BAR_WIDTH {
             self.x = LEFT_BAR_WIDTH + radius;
             self.vx = self.vx.abs();
+            self.bounce_this_frame = Some(BounceKind::HardImpact);
         }
         if self.y - radius <= TOP_DASH_HEIGHT {
             self.y = TOP_DASH_HEIGHT + radius;
             self.vy = self.vy.abs();
             self.spin = -self.spin * 0.8;
+            self.bounce_this_frame = Some(BounceKind::SideWall);
         } else if self.y + radius >= WINDOW_HEIGHT as f32 - TOP_DASH_HEIGHT {
             self.y = WINDOW_HEIGHT as f32 - TOP_DASH_HEIGHT - radius;
             self.vy = -self.vy.abs();
             self.spin = -self.spin * 0.8;
+            self.bounce_this_frame = Some(BounceKind::SideWall);
         }
 
         let reached_paddles = self.vx > 0.0
@@ -214,6 +326,7 @@ impl Ball {
             if impact.abs() <= 1.0 {
                 self.x = PADDLE_COLUMN_X - radius;
                 self.return_from_paddle(impact, slice, curve, false, rebound_angle_degrees);
+                self.bounce_this_frame = Some(BounceKind::HardImpact);
             } else {
                 self.missed_by = Some(missed_player);
             }
@@ -272,6 +385,57 @@ fn paddle_direction(up_pressed: bool, down_pressed: bool) -> f32 {
     f32::from(up_pressed) - f32::from(down_pressed)
 }
 
+fn joystick_direction(axis_value: f32, up_pressed: bool, down_pressed: bool) -> f32 {
+    let direction = axis_value;
+    if direction.abs() >= 0.2 {
+        direction
+    } else {
+        paddle_direction(down_pressed, up_pressed)
+    }
+}
+
+fn poll_joystick(gilrs: Option<&mut Gilrs>) -> JoystickInput {
+    let Some(gilrs) = gilrs else {
+        return JoystickInput::default();
+    };
+
+    let active_gamepad = gilrs.gamepads().next().map(|(id, _)| id);
+    let mut input = JoystickInput::default();
+    while let Some(event) = gilrs.next_event() {
+        if Some(event.id) != active_gamepad {
+            continue;
+        }
+        if let EventType::ButtonPressed(button, _) = event.event {
+            match button {
+                Button::South => input.serve_pressed = true,
+                Button::East => input.menu_pressed = true,
+                _ => {}
+            }
+        }
+    }
+
+    if let Some(id) = active_gamepad {
+        let gamepad = gilrs.gamepad(id);
+        input.connected = gamepad.is_connected();
+        if input.connected {
+            input.player_one_y = gamepad
+                .axis_data(Axis::LeftStickY)
+                .map_or(0.0, |axis| axis.value());
+            input.player_two_y = gamepad
+                .axis_data(Axis::RightStickY)
+                .map_or(0.0, |axis| axis.value());
+            input.player_one_up = gamepad.is_pressed(Button::DPadUp);
+            input.player_one_down = gamepad.is_pressed(Button::DPadDown);
+            input.player_two_up = gamepad.is_pressed(Button::DPadUp);
+            input.player_two_down = gamepad.is_pressed(Button::DPadDown);
+            input.slice_pressed = gamepad.is_pressed(Button::West);
+            input.curve_pressed = gamepad.is_pressed(Button::North);
+        }
+    }
+
+    input
+}
+
 fn award_point(scores: &mut [u32; 2], player: Player, mode: GameMode) -> bool {
     scores[player.score_index()] += 1;
     match mode {
@@ -294,6 +458,21 @@ fn auto_serve_if_ready(
     }
 }
 
+fn start_match(
+    ball: &mut Ball,
+    scores: &mut [u32; 2],
+    game_over: &mut bool,
+    serve_mode: ServeMode,
+    speed_scale: f32,
+) {
+    ball.reset();
+    *scores = [0; 2];
+    *game_over = false;
+    if serve_mode == ServeMode::Automatic {
+        ball.serve(speed_scale);
+    }
+}
+
 fn set_game_camera() -> (i32, i32, i32, i32) {
     let viewport = fitted_viewport(screen_width(), screen_height());
     let mut camera = Camera2D::from_display_rect(Rect::new(0.0, 0.0, GAME_WIDTH, GAME_HEIGHT));
@@ -302,7 +481,7 @@ fn set_game_camera() -> (i32, i32, i32, i32) {
     viewport
 }
 
-fn draw_ball(ball: &Ball) {
+fn draw_ball(ball: &Ball, palette: Palette) {
     for (index, position) in ball.trail.iter().enumerate().rev() {
         let alpha = 0.06 * (1.0 - index as f32 / ball.trail.len().max(1) as f32);
         draw_rectangle(
@@ -310,7 +489,12 @@ fn draw_ball(ball: &Ball) {
             position.y - BALL_SIZE,
             BALL_SIZE * 2.0,
             BALL_SIZE * 2.0,
-            Color::new(PHOSPHOR.r, PHOSPHOR.g, PHOSPHOR.b, alpha),
+            Color::new(
+                palette.primary.r,
+                palette.primary.g,
+                palette.primary.b,
+                alpha,
+            ),
         );
     }
 
@@ -320,7 +504,12 @@ fn draw_ball(ball: &Ball) {
             ball.y - size / 2.0,
             size,
             size,
-            Color::new(PHOSPHOR.r, PHOSPHOR.g, PHOSPHOR.b, alpha),
+            Color::new(
+                palette.primary.r,
+                palette.primary.g,
+                palette.primary.b,
+                alpha,
+            ),
         );
     }
     draw_rectangle(
@@ -328,13 +517,108 @@ fn draw_ball(ball: &Ball) {
         ball.y - BALL_SIZE / 2.0,
         BALL_SIZE,
         BALL_SIZE,
-        PHOSPHOR,
+        palette.primary,
     );
 }
 
 fn with_alpha(mut color: Color, opacity: f32) -> Color {
     color.a *= opacity;
     color
+}
+
+fn pcm_wav_from_fn(sample_count: usize, mut sample_at: impl FnMut(usize) -> i16) -> Vec<u8> {
+    let data_size = (sample_count * 2) as u32;
+    let mut wav = Vec::with_capacity(44 + data_size as usize);
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + data_size).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16_u32.to_le_bytes());
+    wav.extend_from_slice(&1_u16.to_le_bytes());
+    wav.extend_from_slice(&1_u16.to_le_bytes());
+    wav.extend_from_slice(&BOUNCE_SAMPLE_RATE.to_le_bytes());
+    wav.extend_from_slice(&(BOUNCE_SAMPLE_RATE * 2).to_le_bytes());
+    wav.extend_from_slice(&2_u16.to_le_bytes());
+    wav.extend_from_slice(&16_u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data_size.to_le_bytes());
+    for sample_index in 0..sample_count {
+        wav.extend_from_slice(&sample_at(sample_index).to_le_bytes());
+    }
+
+    wav
+}
+
+fn square_wave_wav() -> Vec<u8> {
+    let sample_count = (BOUNCE_SAMPLE_RATE * BOUNCE_DURATION_MS / 1_000) as usize;
+    let samples_per_cycle = BOUNCE_SAMPLE_RATE / BOUNCE_FREQUENCY_HZ;
+    pcm_wav_from_fn(sample_count, |sample_index| {
+        if sample_index as u32 % samples_per_cycle < samples_per_cycle / 2 {
+            BOUNCE_AMPLITUDE
+        } else {
+            -BOUNCE_AMPLITUDE
+        }
+    })
+}
+
+fn hard_impact_wav() -> Vec<u8> {
+    let sample_count = (BOUNCE_SAMPLE_RATE * IMPACT_DURATION_MS / 1_000) as usize;
+    pcm_wav_from_fn(sample_count, |sample_index| {
+        let progress = sample_index as f32 / sample_count as f32;
+        let envelope = 1.0 - 0.25 * progress;
+        let tone = IMPACT_FREQUENCIES_HZ
+            .iter()
+            .map(|frequency| {
+                let phase = (sample_index as u64 * u64::from(*frequency)
+                    % u64::from(BOUNCE_SAMPLE_RATE)) as f32
+                    / BOUNCE_SAMPLE_RATE as f32;
+                if phase < 0.5 {
+                    0.5
+                } else {
+                    -0.5
+                }
+            })
+            .sum::<f32>();
+        (tone * envelope * ALERT_AMPLITUDE as f32).round() as i16
+    })
+}
+
+fn descending_square_wave_wav(
+    start_frequency: f32,
+    end_frequency: f32,
+    duration_ms: u32,
+) -> Vec<u8> {
+    let sample_count = (BOUNCE_SAMPLE_RATE * duration_ms / 1_000) as usize;
+    let mut phase = 0.0_f32;
+    pcm_wav_from_fn(sample_count, |sample_index| {
+        let progress = sample_index as f32 / sample_count as f32;
+        let frequency = start_frequency + (end_frequency - start_frequency) * progress;
+        phase = (phase + frequency / BOUNCE_SAMPLE_RATE as f32).fract();
+        let square = if phase < 0.5 { 1.0 } else { -1.0 };
+        let envelope = (1.0 - progress).powf(1.4);
+        (square * envelope * ALERT_AMPLITUDE as f32).round() as i16
+    })
+}
+
+fn point_scored_wav() -> Vec<u8> {
+    descending_square_wave_wav(
+        SCORE_START_FREQUENCY_HZ,
+        SCORE_END_FREQUENCY_HZ,
+        SCORE_DURATION_MS,
+    )
+}
+
+fn game_over_wav() -> Vec<u8> {
+    let sample_count = (BOUNCE_SAMPLE_RATE * GAME_OVER_DURATION_MS / 1_000) as usize;
+    let mut phase = 0.0_f32;
+    pcm_wav_from_fn(sample_count, |sample_index| {
+        let progress = sample_index as f32 / sample_count as f32;
+        let frequency = GAME_OVER_START_FREQUENCY_HZ
+            + (GAME_OVER_END_FREQUENCY_HZ - GAME_OVER_START_FREQUENCY_HZ) * progress;
+        phase = (phase + frequency / BOUNCE_SAMPLE_RATE as f32).fract();
+        let sawtooth = phase * 2.0 - 1.0;
+        let envelope = (1.0 - progress).powf(1.2);
+        (sawtooth * envelope * ALERT_AMPLITUDE as f32).round() as i16
+    })
 }
 
 fn draw_scanlined_rect(
@@ -364,11 +648,18 @@ fn draw_game_field(
     opacity: f32,
     mode: GameMode,
     scanlines_enabled: bool,
+    palette: Palette,
 ) {
     if scanlines_enabled {
         let mut y = 2.0;
         while y < GAME_HEIGHT {
-            draw_rectangle(0.0, y, GAME_WIDTH, 1.0, with_alpha(SCANLINE_COLOR, opacity));
+            draw_rectangle(
+                0.0,
+                y,
+                GAME_WIDTH,
+                1.0,
+                with_alpha(palette.background_scanline, opacity),
+            );
             y += SCANLINE_SPACING;
         }
     }
@@ -378,8 +669,8 @@ fn draw_game_field(
         0.0,
         LEFT_BAR_WIDTH,
         GAME_HEIGHT,
-        with_alpha(PHOSPHOR, opacity),
-        with_alpha(WALL_SCANLINE_COLOR, opacity),
+        with_alpha(palette.primary, opacity),
+        with_alpha(palette.wall_scanline, opacity),
         scanlines_enabled,
     );
     let mut x = 0.0;
@@ -389,8 +680,8 @@ fn draw_game_field(
             0.0,
             TOP_DASH_WIDTH,
             TOP_DASH_HEIGHT,
-            with_alpha(PHOSPHOR, opacity),
-            with_alpha(WALL_SCANLINE_COLOR, opacity),
+            with_alpha(palette.primary, opacity),
+            with_alpha(palette.wall_scanline, opacity),
             scanlines_enabled,
         );
         x += TOP_DASH_WIDTH + TOP_DASH_GAP;
@@ -403,8 +694,8 @@ fn draw_game_field(
             bottom_y,
             TOP_DASH_WIDTH,
             TOP_DASH_HEIGHT,
-            with_alpha(PHOSPHOR, opacity),
-            with_alpha(WALL_SCANLINE_COLOR, opacity),
+            with_alpha(palette.primary, opacity),
+            with_alpha(palette.wall_scanline, opacity),
             scanlines_enabled,
         );
         x += TOP_DASH_WIDTH + TOP_DASH_GAP;
@@ -415,8 +706,8 @@ fn draw_game_field(
             second_paddle_y - paddle_height / 2.0,
             SECOND_PADDLE_WIDTH,
             paddle_height,
-            with_alpha(SECOND_PADDLE_PHOSPHOR, opacity),
-            with_alpha(SECOND_PADDLE_SCANLINE_COLOR, opacity),
+            with_alpha(palette.secondary, opacity),
+            with_alpha(palette.second_paddle_scanline, opacity),
             scanlines_enabled,
         );
     }
@@ -425,8 +716,8 @@ fn draw_game_field(
         right_paddle_y - paddle_height / 2.0,
         RIGHT_MARKER_WIDTH,
         paddle_height,
-        with_alpha(PHOSPHOR, opacity),
-        with_alpha(PADDLE_SCANLINE_COLOR, opacity),
+        with_alpha(palette.primary, opacity),
+        with_alpha(palette.paddle_scanline, opacity),
         scanlines_enabled,
     );
     if opacity < 1.0 {
@@ -435,10 +726,10 @@ fn draw_game_field(
             ball.y - BALL_SIZE / 2.0,
             BALL_SIZE,
             BALL_SIZE,
-            with_alpha(PHOSPHOR, opacity),
+            with_alpha(palette.primary, opacity),
         );
     } else {
-        draw_ball(ball);
+        draw_ball(ball, palette);
     }
 }
 
@@ -453,22 +744,38 @@ fn draw_centered_text(text: &str, center_x: f32, baseline_y: f32, font_size: f32
     );
 }
 
-fn option_slider_rects() -> [Rect; 6] {
+fn option_slider_rects() -> [Rect; 8] {
     [
-        Rect::new(110.0, 170.0, 280.0, 88.0),
-        Rect::new(410.0, 170.0, 280.0, 88.0),
-        Rect::new(110.0, 274.0, 280.0, 88.0),
-        Rect::new(410.0, 274.0, 280.0, 88.0),
-        Rect::new(110.0, 378.0, 280.0, 88.0),
-        Rect::new(410.0, 378.0, 280.0, 88.0),
+        Rect::new(110.0, 162.0, 280.0, 68.0),
+        Rect::new(410.0, 162.0, 280.0, 68.0),
+        Rect::new(110.0, 242.0, 280.0, 68.0),
+        Rect::new(410.0, 242.0, 280.0, 68.0),
+        Rect::new(110.0, 322.0, 280.0, 68.0),
+        Rect::new(410.0, 322.0, 280.0, 68.0),
+        Rect::new(110.0, 402.0, 280.0, 68.0),
+        Rect::new(410.0, 402.0, 280.0, 68.0),
     ]
 }
 
 fn start_button_rect() -> Rect {
-    Rect::new(300.0, 493.0, 200.0, 58.0)
+    Rect::new(300.0, 520.0, 200.0, 52.0)
 }
 
-fn draw_menu_button(rect: Rect, label: &str, selected: bool, viewport: (i32, i32, i32, i32)) {
+fn game_over_option_rects() -> [Rect; 3] {
+    [
+        Rect::new(250.0, 260.0, 300.0, 48.0),
+        Rect::new(250.0, 322.0, 300.0, 48.0),
+        Rect::new(250.0, 384.0, 300.0, 48.0),
+    ]
+}
+
+fn draw_menu_button(
+    rect: Rect,
+    label: &str,
+    selected: bool,
+    viewport: (i32, i32, i32, i32),
+    palette: Palette,
+) {
     let scale = viewport.2 as f32 / GAME_WIDTH;
     let rect = Rect::new(
         viewport.0 as f32 + rect.x * scale,
@@ -477,9 +784,9 @@ fn draw_menu_button(rect: Rect, label: &str, selected: bool, viewport: (i32, i32
         rect.h * scale,
     );
     let color = if selected {
-        PHOSPHOR
+        palette.primary
     } else {
-        SECOND_PADDLE_PHOSPHOR
+        palette.secondary
     };
     draw_rectangle(
         rect.x,
@@ -523,6 +830,7 @@ fn draw_option_slider(
     selected_index: usize,
     rect: Rect,
     viewport: (i32, i32, i32, i32),
+    palette: Palette,
 ) {
     let scale = viewport.2 as f32 / GAME_WIDTH;
     let x = viewport.0 as f32 + rect.x * scale;
@@ -533,14 +841,20 @@ fn draw_option_slider(
     let last_stop = x + width - 42.0 * scale;
     let track_y = y + 42.0 * scale;
 
-    draw_centered_text(label, center_x, y + 15.0 * scale, 14.0 * scale, PHOSPHOR);
+    draw_centered_text(
+        label,
+        center_x,
+        y + 13.0 * scale,
+        13.0 * scale,
+        palette.primary,
+    );
     draw_line(
         first_stop,
         track_y,
         last_stop,
         track_y,
         4.0 * scale,
-        with_alpha(SECOND_PADDLE_PHOSPHOR, 0.65),
+        with_alpha(palette.secondary, 0.65),
     );
 
     let last_index = choices.len().saturating_sub(1);
@@ -561,9 +875,9 @@ fn draw_option_slider(
                 4.0 * scale
             },
             if index == selected_index {
-                PHOSPHOR
+                palette.primary
             } else {
-                SECOND_PADDLE_PHOSPHOR
+                palette.secondary
             },
         );
         if index == selected_index {
@@ -572,21 +886,16 @@ fn draw_option_slider(
         draw_centered_text(
             choice,
             stop_x,
-            y + 75.0 * scale,
-            12.0 * scale,
+            y + 59.0 * scale,
+            11.0 * scale,
             if index == selected_index {
-                PHOSPHOR
+                palette.primary
             } else {
-                with_alpha(SECOND_PADDLE_PHOSPHOR, 0.65)
+                with_alpha(palette.secondary, 0.65)
             },
         );
     }
-    draw_circle(
-        selected_x,
-        track_y,
-        4.0 * scale,
-        Color::new(0.95, 0.74, 0.39, 1.0),
-    );
+    draw_circle(selected_x, track_y, 4.0 * scale, palette.highlight);
 }
 
 fn draw_attraction_screen(
@@ -596,7 +905,12 @@ fn draw_attraction_screen(
     rebound_angle_index: usize,
     serve_mode: ServeMode,
     scanlines_enabled: bool,
+    game_color: GameColor,
+    control_mode: ControlMode,
+    joystick_connected: bool,
+    joystick_unavailable: bool,
     viewport: (i32, i32, i32, i32),
+    palette: Palette,
 ) {
     let scale = viewport.2 as f32 / GAME_WIDTH;
     let center_x = viewport.0 as f32 + GAME_WIDTH / 2.0 * scale;
@@ -606,19 +920,20 @@ fn draw_attraction_screen(
         center_x,
         top + 117.0 * scale,
         58.0 * scale,
-        PHOSPHOR,
+        palette.primary,
     );
     draw_centered_text(
         "SELECT YOUR GAME",
         center_x,
         top + 154.0 * scale,
         17.0 * scale,
-        SECOND_PADDLE_PHOSPHOR,
+        palette.secondary,
     );
 
     let mode_index = usize::from(mode == GameMode::TwoPlayer);
     let serve_index = usize::from(serve_mode == ServeMode::Manual);
     let scanline_index = usize::from(scanlines_enabled);
+    let control_index = usize::from(control_mode == ControlMode::Joystick);
     let sliders = [
         ("PLAYERS", &PLAYER_MODE_LABELS[..], mode_index),
         ("GAME SPEED", &GAME_SPEED_LABELS[..], speed_index),
@@ -630,13 +945,29 @@ fn draw_attraction_screen(
         ),
         ("SERVE", &SERVE_MODE_LABELS[..], serve_index),
         ("SCANLINES", &SCANLINE_LABELS[..], scanline_index),
+        ("GAME COLOR", &GAME_COLOR_LABELS[..], game_color.index()),
+        ("CONTROLS", &CONTROL_MODE_LABELS[..], control_index),
     ];
     for ((label, choices, selected), rect) in sliders.into_iter().zip(option_slider_rects()) {
-        draw_option_slider(label, choices, selected, rect, viewport);
+        draw_option_slider(label, choices, selected, rect, viewport, palette);
+    }
+
+    if control_mode == ControlMode::Joystick && !joystick_connected {
+        draw_centered_text(
+            if joystick_unavailable {
+                "JOYSTICK INPUT UNAVAILABLE"
+            } else {
+                "CONNECT A JOYSTICK"
+            },
+            center_x,
+            top + 493.0 * scale,
+            13.0 * scale,
+            palette.secondary,
+        );
     }
 
     let start = start_button_rect();
-    draw_menu_button(start, "START GAME", true, viewport);
+    draw_menu_button(start, "START GAME", true, viewport, palette);
 }
 
 fn mouse_in_game(viewport: (i32, i32, i32, i32)) -> Option<Vec2> {
@@ -661,6 +992,7 @@ fn draw_scoreboard(
     mode: GameMode,
     game_over: bool,
     viewport: (i32, i32, i32, i32),
+    palette: Palette,
 ) {
     let scale = viewport.2 as f32 / GAME_WIDTH;
     let center_x = viewport.0 as f32 + viewport.2 as f32 / 2.0;
@@ -671,14 +1003,14 @@ fn draw_scoreboard(
             center_x,
             top + 36.0 * scale,
             26.0 * scale,
-            PHOSPHOR,
+            palette.primary,
         );
         draw_centered_text(
             &scores[0].to_string(),
             center_x,
             top + 108.0 * scale,
             64.0 * scale,
-            PHOSPHOR,
+            palette.primary,
         );
         if game_over {
             draw_centered_text(
@@ -686,7 +1018,7 @@ fn draw_scoreboard(
                 center_x,
                 top + 200.0 * scale,
                 36.0 * scale,
-                SECOND_PADDLE_PHOSPHOR,
+                palette.secondary,
             );
         }
         return;
@@ -697,28 +1029,28 @@ fn draw_scoreboard(
         center_x - 105.0 * scale,
         top + 36.0 * scale,
         26.0 * scale,
-        SECOND_PADDLE_PHOSPHOR,
+        palette.secondary,
     );
     draw_centered_text(
         &scores[1].to_string(),
         center_x - 105.0 * scale,
         top + 108.0 * scale,
         64.0 * scale,
-        SECOND_PADDLE_PHOSPHOR,
+        palette.secondary,
     );
     draw_centered_text(
         "PLAYER 1",
         center_x + 105.0 * scale,
         top + 36.0 * scale,
         26.0 * scale,
-        PHOSPHOR,
+        palette.primary,
     );
     draw_centered_text(
         &scores[0].to_string(),
         center_x + 105.0 * scale,
         top + 108.0 * scale,
         64.0 * scale,
-        PHOSPHOR,
+        palette.primary,
     );
     if game_over {
         draw_centered_text(
@@ -730,13 +1062,66 @@ fn draw_scoreboard(
             center_x,
             top + 200.0 * scale,
             36.0 * scale,
-            SECOND_PADDLE_PHOSPHOR,
+            palette.secondary,
         );
+    }
+}
+
+fn draw_joystick_status(
+    control_mode: ControlMode,
+    joystick_connected: bool,
+    joystick_unavailable: bool,
+    baseline_y: f32,
+    viewport: (i32, i32, i32, i32),
+    palette: Palette,
+) {
+    if control_mode != ControlMode::Joystick || joystick_connected {
+        return;
+    }
+
+    let scale = viewport.2 as f32 / GAME_WIDTH;
+    let center_x = viewport.0 as f32 + viewport.2 as f32 / 2.0;
+    draw_centered_text(
+        if joystick_unavailable {
+            "JOYSTICK INPUT UNAVAILABLE"
+        } else {
+            "CONNECT A JOYSTICK"
+        },
+        center_x,
+        viewport.1 as f32 + baseline_y * scale,
+        14.0 * scale,
+        palette.secondary,
+    );
+}
+
+fn draw_game_over_options(viewport: (i32, i32, i32, i32), palette: Palette) {
+    for (rect, label) in
+        game_over_option_rects()
+            .into_iter()
+            .zip(["PLAY AGAIN", "ATTRACTION SCREEN", "QUIT"])
+    {
+        draw_menu_button(rect, label, true, viewport, palette);
     }
 }
 
 #[macroquad::main(window_conf)]
 async fn main() {
+    let bounce_tone_data = square_wave_wav();
+    let bounce_sound = load_sound_from_bytes(&bounce_tone_data)
+        .await
+        .expect("Failed to load the paddle and wall bounce sound");
+    let impact_tone_data = hard_impact_wav();
+    let impact_sound = load_sound_from_bytes(&impact_tone_data)
+        .await
+        .expect("Failed to load the racket and front-wall impact sound");
+    let point_tone_data = point_scored_wav();
+    let point_sound = load_sound_from_bytes(&point_tone_data)
+        .await
+        .expect("Failed to load the point-scored sound");
+    let game_over_tone_data = game_over_wav();
+    let game_over_sound = load_sound_from_bytes(&game_over_tone_data)
+        .await
+        .expect("Failed to load the game-over and reset sound");
     let mut second_paddle_y = GAME_HEIGHT / 2.0 - RIGHT_MARKER_HEIGHT;
     let mut right_paddle_y = GAME_HEIGHT / 2.0;
     let mut ball = Ball::new();
@@ -749,6 +1134,15 @@ async fn main() {
     let mut rebound_angle_index = 0;
     let mut serve_mode = ServeMode::Automatic;
     let mut scanlines_enabled = true;
+    let mut game_color = GameColor::Amber;
+    let mut control_mode = ControlMode::Keyboard;
+    let (mut gilrs, joystick_unavailable) = match Gilrs::new() {
+        Ok(gilrs) => (Some(gilrs), false),
+        Err(error) => {
+            eprintln!("Joystick input unavailable: {error}");
+            (None, true)
+        }
+    };
 
     loop {
         set_default_camera();
@@ -756,6 +1150,8 @@ async fn main() {
         let viewport = set_game_camera();
         let dt = get_frame_time().min(0.04);
         let paddle_height = PADDLE_SIZES[size_index];
+        let joystick_input = poll_joystick(gilrs.as_mut());
+        let palette = game_color.palette();
 
         if screen == Screen::Attraction {
             let mouse = mouse_in_game(viewport);
@@ -764,7 +1160,7 @@ async fn main() {
                     for (index, rect) in option_slider_rects().into_iter().enumerate() {
                         if rect.contains(mouse) {
                             let choice_count = match index {
-                                1 => GAME_SPEEDS.len(),
+                                1 | 6 => 3,
                                 _ => 2,
                             };
                             let choice = slider_choice_index(mouse.x, rect, choice_count);
@@ -787,18 +1183,27 @@ async fn main() {
                                     };
                                 }
                                 5 => scanlines_enabled = choice == 1,
+                                6 => game_color = GameColor::from_index(choice),
+                                7 => {
+                                    control_mode = if choice == 0 {
+                                        ControlMode::Keyboard
+                                    } else {
+                                        ControlMode::Joystick
+                                    };
+                                }
                                 _ => unreachable!(),
                             }
                         }
                     }
                     if start_button_rect().contains(mouse) {
                         screen = Screen::Playing;
-                        ball.reset();
-                        if serve_mode == ServeMode::Automatic {
-                            ball.serve(GAME_SPEEDS[speed_index]);
-                        }
-                        scores = [0; 2];
-                        game_over = false;
+                        start_match(
+                            &mut ball,
+                            &mut scores,
+                            &mut game_over,
+                            serve_mode,
+                            GAME_SPEEDS[speed_index],
+                        );
                     }
                 }
             }
@@ -810,6 +1215,7 @@ async fn main() {
                 0.2,
                 mode,
                 scanlines_enabled,
+                palette,
             );
             set_default_camera();
             draw_attraction_screen(
@@ -819,45 +1225,128 @@ async fn main() {
                 rebound_angle_index,
                 serve_mode,
                 scanlines_enabled,
+                game_color,
+                control_mode,
+                joystick_input.connected,
+                joystick_unavailable,
                 viewport,
+                palette,
             );
         } else {
+            if game_over {
+                if is_key_pressed(KeyCode::Q) {
+                    macroquad::miniquad::window::order_quit();
+                    return;
+                }
+                if is_key_pressed(KeyCode::R) {
+                    start_match(
+                        &mut ball,
+                        &mut scores,
+                        &mut game_over,
+                        serve_mode,
+                        GAME_SPEEDS[speed_index],
+                    );
+                    play_sound_once(&game_over_sound);
+                }
+                if is_mouse_button_pressed(MouseButton::Left) {
+                    if let Some(mouse) = mouse_in_game(viewport) {
+                        let options = game_over_option_rects();
+                        if options[0].contains(mouse) {
+                            start_match(
+                                &mut ball,
+                                &mut scores,
+                                &mut game_over,
+                                serve_mode,
+                                GAME_SPEEDS[speed_index],
+                            );
+                            play_sound_once(&game_over_sound);
+                        } else if options[1].contains(mouse) {
+                            screen = Screen::Attraction;
+                            ball.reset();
+                        } else if options[2].contains(mouse) {
+                            macroquad::miniquad::window::order_quit();
+                            return;
+                        }
+                    }
+                }
+            }
+
             let top_bound = TOP_DASH_HEIGHT + paddle_height / 2.0;
             let bottom_bound = GAME_HEIGHT - TOP_DASH_HEIGHT - paddle_height / 2.0;
-            let right_direction =
-                paddle_direction(is_key_down(KeyCode::W), is_key_down(KeyCode::S));
-            right_paddle_y = (right_paddle_y + right_direction * PADDLE_SPEED * dt)
-                .clamp(top_bound, bottom_bound);
-            if mode == GameMode::TwoPlayer {
-                let second_direction =
-                    paddle_direction(is_key_down(KeyCode::Up), is_key_down(KeyCode::Down));
-                second_paddle_y = (second_paddle_y + second_direction * PADDLE_SPEED * dt)
+            if !game_over {
+                let right_direction = match control_mode {
+                    ControlMode::Keyboard => {
+                        paddle_direction(is_key_down(KeyCode::W), is_key_down(KeyCode::S))
+                    }
+                    ControlMode::Joystick => joystick_direction(
+                        joystick_input.player_one_y,
+                        mode == GameMode::OnePlayer && joystick_input.player_one_up,
+                        mode == GameMode::OnePlayer && joystick_input.player_one_down,
+                    ),
+                };
+                right_paddle_y = (right_paddle_y + right_direction * PADDLE_SPEED * dt)
                     .clamp(top_bound, bottom_bound);
+                if mode == GameMode::TwoPlayer {
+                    let second_direction = match control_mode {
+                        ControlMode::Keyboard => {
+                            paddle_direction(is_key_down(KeyCode::Up), is_key_down(KeyCode::Down))
+                        }
+                        ControlMode::Joystick => joystick_direction(
+                            joystick_input.player_two_y,
+                            joystick_input.player_two_up,
+                            joystick_input.player_two_down,
+                        ),
+                    };
+                    second_paddle_y = (second_paddle_y + second_direction * PADDLE_SPEED * dt)
+                        .clamp(top_bound, bottom_bound);
+                }
             }
-            if is_key_pressed(KeyCode::Space)
-                && !ball.moving
-                && !game_over
-                && serve_mode == ServeMode::Manual
-            {
+            let serve_pressed = match control_mode {
+                ControlMode::Keyboard => is_key_pressed(KeyCode::Space),
+                ControlMode::Joystick => joystick_input.serve_pressed,
+            };
+            if serve_pressed && !ball.moving && !game_over && serve_mode == ServeMode::Manual {
                 ball.serve(GAME_SPEEDS[speed_index]);
             }
-            if is_key_pressed(KeyCode::Escape) {
+            let menu_pressed = is_key_pressed(KeyCode::Escape)
+                || (control_mode == ControlMode::Joystick && joystick_input.menu_pressed);
+            if menu_pressed {
                 screen = Screen::Attraction;
                 ball.reset();
             }
+            let slice_pressed = match control_mode {
+                ControlMode::Keyboard => is_key_down(KeyCode::A),
+                ControlMode::Joystick => joystick_input.slice_pressed,
+            };
+            let curve_pressed = match control_mode {
+                ControlMode::Keyboard => is_key_down(KeyCode::D),
+                ControlMode::Joystick => joystick_input.curve_pressed,
+            };
             if let Some(player) = ball.update(
                 dt,
                 second_paddle_y,
                 right_paddle_y,
                 paddle_height,
-                is_key_down(KeyCode::A),
-                is_key_down(KeyCode::D),
+                slice_pressed,
+                curve_pressed,
                 mode,
                 REBOUND_ANGLE_DEGREES[rebound_angle_index],
             ) {
                 game_over = award_point(&mut scores, player, mode);
+                play_sound_once(if game_over {
+                    &game_over_sound
+                } else {
+                    &point_sound
+                });
             }
-            auto_serve_if_ready(&mut ball, serve_mode, game_over, GAME_SPEEDS[speed_index]);
+            match ball.bounce_this_frame {
+                Some(BounceKind::SideWall) => play_sound_once(&bounce_sound),
+                Some(BounceKind::HardImpact) => play_sound_once(&impact_sound),
+                None => {}
+            }
+            if screen == Screen::Playing {
+                auto_serve_if_ready(&mut ball, serve_mode, game_over, GAME_SPEEDS[speed_index]);
+            }
             draw_game_field(
                 second_paddle_y,
                 right_paddle_y,
@@ -866,11 +1355,23 @@ async fn main() {
                 1.0,
                 mode,
                 scanlines_enabled,
+                palette,
             );
         }
         set_default_camera();
         if screen == Screen::Playing {
-            draw_scoreboard(scores, mode, game_over, viewport);
+            draw_scoreboard(scores, mode, game_over, viewport, palette);
+            draw_joystick_status(
+                control_mode,
+                joystick_input.connected,
+                joystick_unavailable,
+                160.0,
+                viewport,
+                palette,
+            );
+            if game_over {
+                draw_game_over_options(viewport, palette);
+            }
         }
         next_frame().await;
     }
@@ -879,6 +1380,95 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn wav_sample_count(wav: &[u8]) -> usize {
+        (u32::from_le_bytes(wav[40..44].try_into().unwrap()) / 2) as usize
+    }
+
+    fn sign_changes(wav: &[u8], start: usize, end: usize) -> usize {
+        (start..end - 1)
+            .filter(|&sample_index| {
+                let current = i16::from_le_bytes(
+                    wav[44 + sample_index * 2..46 + sample_index * 2]
+                        .try_into()
+                        .unwrap(),
+                );
+                let next = i16::from_le_bytes(
+                    wav[46 + sample_index * 2..48 + sample_index * 2]
+                        .try_into()
+                        .unwrap(),
+                );
+                (current >= 0) != (next >= 0)
+            })
+            .count()
+    }
+
+    #[test]
+    fn bounce_sound_is_a_60ms_1200hz_mono_square_wave() {
+        let wav = square_wave_wav();
+        let sample_count = (BOUNCE_SAMPLE_RATE * BOUNCE_DURATION_MS / 1_000) as usize;
+
+        assert_eq!(&wav[..4], b"RIFF");
+        assert_eq!(&wav[8..12], b"WAVE");
+        assert_eq!(&wav[36..40], b"data");
+        assert_eq!(
+            u32::from_le_bytes(wav[40..44].try_into().unwrap()),
+            (sample_count * 2) as u32
+        );
+        assert_eq!(wav.len(), 44 + sample_count * 2);
+        assert_eq!(
+            i16::from_le_bytes(wav[44..46].try_into().unwrap()),
+            BOUNCE_AMPLITUDE
+        );
+        assert_eq!(
+            i16::from_le_bytes(wav[44 + 20 * 2..46 + 20 * 2].try_into().unwrap()),
+            -BOUNCE_AMPLITUDE
+        );
+    }
+
+    #[test]
+    fn impact_sound_is_distinct_and_sixty_milliseconds() {
+        let bounce = square_wave_wav();
+        let impact = hard_impact_wav();
+
+        assert_eq!(
+            wav_sample_count(&impact),
+            (BOUNCE_SAMPLE_RATE * 60 / 1_000) as usize
+        );
+        assert_ne!(impact, bounce);
+    }
+
+    #[test]
+    fn score_and_game_over_sounds_sweep_down_for_their_expected_durations() {
+        let point = point_scored_wav();
+        let game_over = game_over_wav();
+        let window_samples = (BOUNCE_SAMPLE_RATE * 60 / 1_000) as usize;
+
+        assert_eq!(
+            wav_sample_count(&point),
+            (BOUNCE_SAMPLE_RATE * SCORE_DURATION_MS / 1_000) as usize
+        );
+        assert_eq!(
+            wav_sample_count(&game_over),
+            (BOUNCE_SAMPLE_RATE * GAME_OVER_DURATION_MS / 1_000) as usize
+        );
+        assert!(
+            sign_changes(&point, 0, window_samples)
+                > sign_changes(
+                    &point,
+                    wav_sample_count(&point) - window_samples,
+                    wav_sample_count(&point),
+                )
+        );
+        assert!(
+            sign_changes(&game_over, 0, window_samples)
+                > sign_changes(
+                    &game_over,
+                    wav_sample_count(&game_over) - window_samples,
+                    wav_sample_count(&game_over),
+                )
+        );
+    }
 
     #[test]
     fn ball_rebounds_from_top_wall_without_changing_horizontal_direction() {
@@ -891,6 +1481,7 @@ mod tests {
             speed_scale: 1.0,
             moving: true,
             missed_by: None,
+            bounce_this_frame: None,
             trail: Vec::new(),
         };
 
@@ -910,6 +1501,7 @@ mod tests {
 
         assert!(ball.vx < 0.0);
         assert!(ball.vy > 0.0);
+        assert_eq!(ball.bounce_this_frame, Some(BounceKind::SideWall));
     }
 
     #[test]
@@ -935,6 +1527,7 @@ mod tests {
             speed_scale: 1.0,
             moving: true,
             missed_by: None,
+            bounce_this_frame: None,
             trail: Vec::new(),
         };
 
@@ -956,6 +1549,7 @@ mod tests {
         assert!(ball.vx < 0.0);
         assert!(ball.vx.hypot(ball.vy) > 300.0);
         assert!(ball.vx.hypot(ball.vy) <= MAX_BALL_SPEED);
+        assert_eq!(ball.bounce_this_frame, Some(BounceKind::HardImpact));
     }
 
     #[test]
@@ -971,6 +1565,7 @@ mod tests {
             speed_scale: 1.0,
             moving: true,
             missed_by: None,
+            bounce_this_frame: None,
             trail: Vec::new(),
         };
         let mut small_paddle_miss = Ball {
@@ -982,6 +1577,7 @@ mod tests {
             speed_scale: 1.0,
             moving: true,
             missed_by: None,
+            bounce_this_frame: None,
             trail: Vec::new(),
         };
 
@@ -1057,6 +1653,7 @@ mod tests {
             speed_scale: 1.0,
             moving: true,
             missed_by: None,
+            bounce_this_frame: None,
             trail: Vec::new(),
         };
 
@@ -1107,6 +1704,7 @@ mod tests {
             speed_scale: 1.0,
             moving: true,
             missed_by: None,
+            bounce_this_frame: None,
             trail: Vec::new(),
         };
 
@@ -1143,6 +1741,7 @@ mod tests {
             speed_scale: 1.0,
             moving: true,
             missed_by: None,
+            bounce_this_frame: None,
             trail: Vec::new(),
         };
 
@@ -1196,6 +1795,25 @@ mod tests {
     }
 
     #[test]
+    fn joystick_direction_uses_stick_with_dpad_deadzone_fallback() {
+        assert_eq!(joystick_direction(0.75, false, false), 0.75);
+        assert_eq!(joystick_direction(-0.75, false, false), -0.75);
+        assert_eq!(joystick_direction(0.1, true, false), -1.0);
+        assert_eq!(joystick_direction(0.1, false, false), 0.0);
+    }
+
+    #[test]
+    fn game_color_options_provide_distinct_palettes() {
+        let green = GameColor::from_index(0).palette();
+        let amber = GameColor::from_index(1).palette();
+        let white = GameColor::from_index(2).palette();
+
+        assert_ne!(green.primary.r, amber.primary.r);
+        assert_ne!(white.primary.r, amber.primary.r);
+        assert!(matches!(GameColor::from_index(1), GameColor::Amber));
+    }
+
+    #[test]
     fn slider_clicks_select_nearest_two_or_three_position() {
         let rect = Rect::new(0.0, 0.0, 280.0, 88.0);
         assert_eq!(slider_choice_index(42.0, rect, 2), 0);
@@ -1233,6 +1851,37 @@ mod tests {
     }
 
     #[test]
+    fn starting_match_resets_scores_and_respects_serve_mode() {
+        let mut ball = Ball::new();
+        let mut scores = [GAME_POINT_LIMIT, 0];
+        let mut game_over = true;
+
+        start_match(
+            &mut ball,
+            &mut scores,
+            &mut game_over,
+            ServeMode::Manual,
+            GAME_SPEEDS[1],
+        );
+        assert_eq!(scores, [0; 2]);
+        assert!(!game_over);
+        assert!(!ball.moving);
+
+        scores[0] = 3;
+        game_over = true;
+        start_match(
+            &mut ball,
+            &mut scores,
+            &mut game_over,
+            ServeMode::Automatic,
+            GAME_SPEEDS[1],
+        );
+        assert_eq!(scores, [0; 2]);
+        assert!(!game_over);
+        assert!(ball.moving);
+    }
+
+    #[test]
     fn single_player_ignores_the_second_paddle() {
         let first_paddle_y = WINDOW_HEIGHT as f32 / 2.0;
         let second_paddle_y = first_paddle_y - RIGHT_MARKER_HEIGHT;
@@ -1245,6 +1894,7 @@ mod tests {
             speed_scale: 1.0,
             moving: true,
             missed_by: None,
+            bounce_this_frame: None,
             trail: Vec::new(),
         };
 
