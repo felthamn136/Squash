@@ -20,8 +20,8 @@ const BALL_VERTICAL_SPEED: f32 = 200.0;
 const RALLY_SPEEDUP: f32 = 1.04;
 const SLICE_SPEEDUP: f32 = 1.10;
 const MAX_BALL_SPEED: f32 = 620.0;
-const MAX_BOUNCE_ANGLE: f32 = 0.9;
 const CURVE_ACCELERATION: f32 = 600.0;
+const GAME_POINT_LIMIT: u32 = 15;
 const SCANLINE_SPACING: f32 = 4.0;
 const PHOSPHOR: Color = Color::new(0.82, 0.54, 0.18, 1.0);
 const SECOND_PADDLE_PHOSPHOR: Color = Color::new(0.9, 0.64, 0.32, 1.0);
@@ -31,8 +31,13 @@ const PADDLE_SCANLINE_COLOR: Color = Color::new(0.58, 0.39, 0.14, 1.0);
 const SECOND_PADDLE_SCANLINE_COLOR: Color = Color::new(0.7, 0.52, 0.28, 1.0);
 const GAME_SPEEDS: [f32; 3] = [0.75, 1.0, 1.35];
 const GAME_SPEED_LABELS: [&str; 3] = ["SLOW", "NORMAL", "FAST"];
-const PADDLE_SIZES: [f32; 3] = [56.0, RIGHT_MARKER_HEIGHT, 112.0];
-const PADDLE_SIZE_LABELS: [&str; 3] = ["SMALL", "NORMAL", "LARGE"];
+const PADDLE_SIZES: [f32; 2] = [56.0, RIGHT_MARKER_HEIGHT];
+const PADDLE_SIZE_LABELS: [&str; 2] = ["SMALL", "NORMAL"];
+const REBOUND_ANGLE_DEGREES: [f32; 2] = [20.0, 40.0];
+const REBOUND_ANGLE_LABELS: [&str; 2] = ["SHALLOW 20", "STEEP 40"];
+const PLAYER_MODE_LABELS: [&str; 2] = ["1 PLAYER", "2 PLAYER"];
+const SERVE_MODE_LABELS: [&str; 2] = ["AUTO", "MANUAL"];
+const SCANLINE_LABELS: [&str; 2] = ["OFF", "ON"];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Screen {
@@ -44,6 +49,12 @@ enum Screen {
 enum GameMode {
     OnePlayer,
     TwoPlayer,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ServeMode {
+    Automatic,
+    Manual,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -111,10 +122,21 @@ impl Ball {
         *self = Self::new();
     }
 
-    fn return_from_paddle(&mut self, impact: f32, slice: bool, curve: bool, toward_right: bool) {
+    fn return_from_paddle(
+        &mut self,
+        impact: f32,
+        slice: bool,
+        curve: bool,
+        toward_right: bool,
+        rebound_angle_degrees: f32,
+    ) {
         let speedup = if slice { SLICE_SPEEDUP } else { RALLY_SPEEDUP };
         let speed = (self.vx.hypot(self.vy) * speedup).min(MAX_BALL_SPEED * self.speed_scale);
-        let angle_scale = if slice { 0.18 } else { MAX_BOUNCE_ANGLE };
+        let angle_scale = if slice {
+            0.18
+        } else {
+            rebound_angle_degrees.to_radians()
+        };
         let angle = impact.clamp(-1.0, 1.0) * angle_scale;
         self.vx = if toward_right { 1.0 } else { -1.0 } * speed * angle.cos();
         self.vy = speed * angle.sin();
@@ -137,6 +159,8 @@ impl Ball {
         paddle_height: f32,
         slice: bool,
         curve: bool,
+        mode: GameMode,
+        rebound_angle_degrees: f32,
     ) -> Option<Player> {
         if !self.moving {
             return None;
@@ -176,16 +200,20 @@ impl Ball {
             && previous_x + radius < PADDLE_COLUMN_X
             && self.x + radius >= PADDLE_COLUMN_X;
         if reached_paddles {
-            let second_impact = (self.y - second_paddle_y) / (paddle_height / 2.0);
             let first_impact = (self.y - right_paddle_y) / (paddle_height / 2.0);
-            let (missed_player, impact) = if second_impact.abs() <= first_impact.abs() {
-                (Player::Two, second_impact)
-            } else {
+            let (missed_player, impact) = if mode == GameMode::OnePlayer {
                 (Player::One, first_impact)
+            } else {
+                let second_impact = (self.y - second_paddle_y) / (paddle_height / 2.0);
+                if second_impact.abs() <= first_impact.abs() {
+                    (Player::Two, second_impact)
+                } else {
+                    (Player::One, first_impact)
+                }
             };
             if impact.abs() <= 1.0 {
                 self.x = PADDLE_COLUMN_X - radius;
-                self.return_from_paddle(impact, slice, curve, false);
+                self.return_from_paddle(impact, slice, curve, false, rebound_angle_degrees);
             } else {
                 self.missed_by = Some(missed_player);
             }
@@ -193,18 +221,26 @@ impl Ball {
             && self.missed_by.is_none()
             && self.x - radius > PADDLE_COLUMN_X + SECOND_PADDLE_WIDTH
         {
-            let second_impact = (self.y - second_paddle_y).abs();
-            let first_impact = (self.y - right_paddle_y).abs();
-            self.missed_by = Some(if second_impact <= first_impact {
-                Player::Two
-            } else {
+            self.missed_by = Some(if mode == GameMode::OnePlayer {
                 Player::One
+            } else {
+                let second_impact = (self.y - second_paddle_y).abs();
+                let first_impact = (self.y - right_paddle_y).abs();
+                if second_impact <= first_impact {
+                    Player::Two
+                } else {
+                    Player::One
+                }
             });
         }
 
         if self.x - radius > GAME_WIDTH {
             if let Some(missed_player) = self.missed_by {
-                let scoring_player = missed_player.opponent();
+                let scoring_player = if mode == GameMode::OnePlayer {
+                    missed_player
+                } else {
+                    missed_player.opponent()
+                };
                 self.reset();
                 return Some(scoring_player);
             }
@@ -234,6 +270,28 @@ fn fitted_viewport(screen_width: f32, screen_height: f32) -> (i32, i32, i32, i32
 
 fn paddle_direction(up_pressed: bool, down_pressed: bool) -> f32 {
     f32::from(up_pressed) - f32::from(down_pressed)
+}
+
+fn award_point(scores: &mut [u32; 2], player: Player, mode: GameMode) -> bool {
+    scores[player.score_index()] += 1;
+    match mode {
+        GameMode::OnePlayer => scores[0] >= GAME_POINT_LIMIT,
+        GameMode::TwoPlayer => scores[player.score_index()] >= GAME_POINT_LIMIT,
+    }
+}
+
+fn auto_serve_if_ready(
+    ball: &mut Ball,
+    serve_mode: ServeMode,
+    game_over: bool,
+    speed_scale: f32,
+) -> bool {
+    if serve_mode == ServeMode::Automatic && !ball.moving && !game_over {
+        ball.serve(speed_scale);
+        true
+    } else {
+        false
+    }
 }
 
 fn set_game_camera() -> (i32, i32, i32, i32) {
@@ -286,12 +344,15 @@ fn draw_scanlined_rect(
     height: f32,
     fill_color: Color,
     line_color: Color,
+    scanlines_enabled: bool,
 ) {
     draw_rectangle(x, y, width, height, fill_color);
-    let mut line_y = y + 2.0;
-    while line_y < y + height {
-        draw_rectangle(x, line_y, width, 1.0, line_color);
-        line_y += SCANLINE_SPACING;
+    if scanlines_enabled {
+        let mut line_y = y + 2.0;
+        while line_y < y + height {
+            draw_rectangle(x, line_y, width, 1.0, line_color);
+            line_y += SCANLINE_SPACING;
+        }
     }
 }
 
@@ -301,11 +362,15 @@ fn draw_game_field(
     paddle_height: f32,
     ball: &Ball,
     opacity: f32,
+    mode: GameMode,
+    scanlines_enabled: bool,
 ) {
-    let mut y = 2.0;
-    while y < GAME_HEIGHT {
-        draw_rectangle(0.0, y, GAME_WIDTH, 1.0, with_alpha(SCANLINE_COLOR, opacity));
-        y += SCANLINE_SPACING;
+    if scanlines_enabled {
+        let mut y = 2.0;
+        while y < GAME_HEIGHT {
+            draw_rectangle(0.0, y, GAME_WIDTH, 1.0, with_alpha(SCANLINE_COLOR, opacity));
+            y += SCANLINE_SPACING;
+        }
     }
 
     draw_scanlined_rect(
@@ -315,6 +380,7 @@ fn draw_game_field(
         GAME_HEIGHT,
         with_alpha(PHOSPHOR, opacity),
         with_alpha(WALL_SCANLINE_COLOR, opacity),
+        scanlines_enabled,
     );
     let mut x = 0.0;
     while x < GAME_WIDTH {
@@ -325,6 +391,7 @@ fn draw_game_field(
             TOP_DASH_HEIGHT,
             with_alpha(PHOSPHOR, opacity),
             with_alpha(WALL_SCANLINE_COLOR, opacity),
+            scanlines_enabled,
         );
         x += TOP_DASH_WIDTH + TOP_DASH_GAP;
     }
@@ -338,17 +405,21 @@ fn draw_game_field(
             TOP_DASH_HEIGHT,
             with_alpha(PHOSPHOR, opacity),
             with_alpha(WALL_SCANLINE_COLOR, opacity),
+            scanlines_enabled,
         );
         x += TOP_DASH_WIDTH + TOP_DASH_GAP;
     }
-    draw_scanlined_rect(
-        PADDLE_COLUMN_X,
-        second_paddle_y - paddle_height / 2.0,
-        SECOND_PADDLE_WIDTH,
-        paddle_height,
-        with_alpha(SECOND_PADDLE_PHOSPHOR, opacity),
-        with_alpha(SECOND_PADDLE_SCANLINE_COLOR, opacity),
-    );
+    if mode == GameMode::TwoPlayer {
+        draw_scanlined_rect(
+            PADDLE_COLUMN_X,
+            second_paddle_y - paddle_height / 2.0,
+            SECOND_PADDLE_WIDTH,
+            paddle_height,
+            with_alpha(SECOND_PADDLE_PHOSPHOR, opacity),
+            with_alpha(SECOND_PADDLE_SCANLINE_COLOR, opacity),
+            scanlines_enabled,
+        );
+    }
     draw_scanlined_rect(
         PADDLE_COLUMN_X,
         right_paddle_y - paddle_height / 2.0,
@@ -356,6 +427,7 @@ fn draw_game_field(
         paddle_height,
         with_alpha(PHOSPHOR, opacity),
         with_alpha(PADDLE_SCANLINE_COLOR, opacity),
+        scanlines_enabled,
     );
     if opacity < 1.0 {
         draw_rectangle(
@@ -381,26 +453,14 @@ fn draw_centered_text(text: &str, center_x: f32, baseline_y: f32, font_size: f32
     );
 }
 
-fn menu_mode_rects() -> [Rect; 2] {
+fn option_slider_rects() -> [Rect; 6] {
     [
-        Rect::new(205.0, 204.0, 185.0, 52.0),
-        Rect::new(410.0, 204.0, 185.0, 52.0),
-    ]
-}
-
-fn menu_option_rects() -> [Rect; 3] {
-    [
-        Rect::new(250.0, 306.0, 90.0, 48.0),
-        Rect::new(355.0, 306.0, 90.0, 48.0),
-        Rect::new(460.0, 306.0, 90.0, 48.0),
-    ]
-}
-
-fn menu_size_rects() -> [Rect; 3] {
-    [
-        Rect::new(250.0, 407.0, 90.0, 48.0),
-        Rect::new(355.0, 407.0, 90.0, 48.0),
-        Rect::new(460.0, 407.0, 90.0, 48.0),
+        Rect::new(110.0, 170.0, 280.0, 88.0),
+        Rect::new(410.0, 170.0, 280.0, 88.0),
+        Rect::new(110.0, 274.0, 280.0, 88.0),
+        Rect::new(410.0, 274.0, 280.0, 88.0),
+        Rect::new(110.0, 378.0, 280.0, 88.0),
+        Rect::new(410.0, 378.0, 280.0, 88.0),
     ]
 }
 
@@ -445,10 +505,97 @@ fn draw_menu_button(rect: Rect, label: &str, selected: bool, viewport: (i32, i32
     );
 }
 
+fn slider_choice_index(mouse_x: f32, rect: Rect, choice_count: usize) -> usize {
+    let last_index = choice_count.saturating_sub(1);
+    if last_index == 0 {
+        return 0;
+    }
+
+    let first_stop = rect.x + 42.0;
+    let last_stop = rect.x + rect.w - 42.0;
+    let position = (mouse_x - first_stop) / (last_stop - first_stop) * last_index as f32;
+    position.round().clamp(0.0, last_index as f32) as usize
+}
+
+fn draw_option_slider(
+    label: &str,
+    choices: &[&str],
+    selected_index: usize,
+    rect: Rect,
+    viewport: (i32, i32, i32, i32),
+) {
+    let scale = viewport.2 as f32 / GAME_WIDTH;
+    let x = viewport.0 as f32 + rect.x * scale;
+    let y = viewport.1 as f32 + rect.y * scale;
+    let width = rect.w * scale;
+    let center_x = x + width / 2.0;
+    let first_stop = x + 42.0 * scale;
+    let last_stop = x + width - 42.0 * scale;
+    let track_y = y + 42.0 * scale;
+
+    draw_centered_text(label, center_x, y + 15.0 * scale, 14.0 * scale, PHOSPHOR);
+    draw_line(
+        first_stop,
+        track_y,
+        last_stop,
+        track_y,
+        4.0 * scale,
+        with_alpha(SECOND_PADDLE_PHOSPHOR, 0.65),
+    );
+
+    let last_index = choices.len().saturating_sub(1);
+    let mut selected_x = first_stop;
+    for (index, choice) in choices.iter().enumerate() {
+        let fraction = if last_index == 0 {
+            0.0
+        } else {
+            index as f32 / last_index as f32
+        };
+        let stop_x = first_stop + (last_stop - first_stop) * fraction;
+        draw_circle(
+            stop_x,
+            track_y,
+            if index == selected_index {
+                9.0 * scale
+            } else {
+                4.0 * scale
+            },
+            if index == selected_index {
+                PHOSPHOR
+            } else {
+                SECOND_PADDLE_PHOSPHOR
+            },
+        );
+        if index == selected_index {
+            selected_x = stop_x;
+        }
+        draw_centered_text(
+            choice,
+            stop_x,
+            y + 75.0 * scale,
+            12.0 * scale,
+            if index == selected_index {
+                PHOSPHOR
+            } else {
+                with_alpha(SECOND_PADDLE_PHOSPHOR, 0.65)
+            },
+        );
+    }
+    draw_circle(
+        selected_x,
+        track_y,
+        4.0 * scale,
+        Color::new(0.95, 0.74, 0.39, 1.0),
+    );
+}
+
 fn draw_attraction_screen(
     mode: GameMode,
     speed_index: usize,
     size_index: usize,
+    rebound_angle_index: usize,
+    serve_mode: ServeMode,
+    scanlines_enabled: bool,
     viewport: (i32, i32, i32, i32),
 ) {
     let scale = viewport.2 as f32 / GAME_WIDTH;
@@ -469,57 +616,23 @@ fn draw_attraction_screen(
         SECOND_PADDLE_PHOSPHOR,
     );
 
-    draw_centered_text(
-        "PLAYERS",
-        center_x,
-        top + 194.0 * scale,
-        15.0 * scale,
-        PHOSPHOR,
-    );
-    let mode_rects = menu_mode_rects();
-    draw_menu_button(
-        mode_rects[0],
-        "1 PLAYER",
-        mode == GameMode::OnePlayer,
-        viewport,
-    );
-    draw_menu_button(
-        mode_rects[1],
-        "2 PLAYER",
-        mode == GameMode::TwoPlayer,
-        viewport,
-    );
-
-    draw_centered_text(
-        "GAME SPEED",
-        center_x,
-        top + 295.0 * scale,
-        15.0 * scale,
-        PHOSPHOR,
-    );
-    for (index, rect) in menu_option_rects().into_iter().enumerate() {
-        draw_menu_button(
-            rect,
-            GAME_SPEED_LABELS[index],
-            speed_index == index,
-            viewport,
-        );
-    }
-
-    draw_centered_text(
-        "PADDLE SIZE",
-        center_x,
-        top + 396.0 * scale,
-        15.0 * scale,
-        PHOSPHOR,
-    );
-    for (index, rect) in menu_size_rects().into_iter().enumerate() {
-        draw_menu_button(
-            rect,
-            PADDLE_SIZE_LABELS[index],
-            size_index == index,
-            viewport,
-        );
+    let mode_index = usize::from(mode == GameMode::TwoPlayer);
+    let serve_index = usize::from(serve_mode == ServeMode::Manual);
+    let scanline_index = usize::from(scanlines_enabled);
+    let sliders = [
+        ("PLAYERS", &PLAYER_MODE_LABELS[..], mode_index),
+        ("GAME SPEED", &GAME_SPEED_LABELS[..], speed_index),
+        ("PADDLE SIZE", &PADDLE_SIZE_LABELS[..], size_index),
+        (
+            "REBOUND ANGLE",
+            &REBOUND_ANGLE_LABELS[..],
+            rebound_angle_index,
+        ),
+        ("SERVE", &SERVE_MODE_LABELS[..], serve_index),
+        ("SCANLINES", &SCANLINE_LABELS[..], scanline_index),
+    ];
+    for ((label, choices, selected), rect) in sliders.into_iter().zip(option_slider_rects()) {
+        draw_option_slider(label, choices, selected, rect, viewport);
     }
 
     let start = start_button_rect();
@@ -543,16 +656,44 @@ fn mouse_in_game(viewport: (i32, i32, i32, i32)) -> Option<Vec2> {
     ))
 }
 
-fn draw_scoreboard(scores: [u32; 2], mode: GameMode, viewport: (i32, i32, i32, i32)) {
+fn draw_scoreboard(
+    scores: [u32; 2],
+    mode: GameMode,
+    game_over: bool,
+    viewport: (i32, i32, i32, i32),
+) {
     let scale = viewport.2 as f32 / GAME_WIDTH;
     let center_x = viewport.0 as f32 + viewport.2 as f32 / 2.0;
     let top = viewport.1 as f32;
+    if mode == GameMode::OnePlayer {
+        draw_centered_text(
+            "MISSES",
+            center_x,
+            top + 36.0 * scale,
+            26.0 * scale,
+            PHOSPHOR,
+        );
+        draw_centered_text(
+            &scores[0].to_string(),
+            center_x,
+            top + 108.0 * scale,
+            64.0 * scale,
+            PHOSPHOR,
+        );
+        if game_over {
+            draw_centered_text(
+                "GAME OVER",
+                center_x,
+                top + 200.0 * scale,
+                36.0 * scale,
+                SECOND_PADDLE_PHOSPHOR,
+            );
+        }
+        return;
+    }
+
     draw_centered_text(
-        if mode == GameMode::OnePlayer {
-            "CPU"
-        } else {
-            "PLAYER 2"
-        },
+        "PLAYER 2",
         center_x - 105.0 * scale,
         top + 36.0 * scale,
         26.0 * scale,
@@ -579,6 +720,19 @@ fn draw_scoreboard(scores: [u32; 2], mode: GameMode, viewport: (i32, i32, i32, i
         64.0 * scale,
         PHOSPHOR,
     );
+    if game_over {
+        draw_centered_text(
+            if scores[0] >= GAME_POINT_LIMIT {
+                "PLAYER 1 WINS"
+            } else {
+                "PLAYER 2 WINS"
+            },
+            center_x,
+            top + 200.0 * scale,
+            36.0 * scale,
+            SECOND_PADDLE_PHOSPHOR,
+        );
+    }
 }
 
 #[macroquad::main(window_conf)]
@@ -589,8 +743,12 @@ async fn main() {
     let mut scores = [0; 2];
     let mut screen = Screen::Attraction;
     let mut mode = GameMode::OnePlayer;
+    let mut game_over = false;
     let mut speed_index = 1;
     let mut size_index = 1;
+    let mut rebound_angle_index = 0;
+    let mut serve_mode = ServeMode::Automatic;
+    let mut scanlines_enabled = true;
 
     loop {
         set_default_camera();
@@ -603,30 +761,44 @@ async fn main() {
             let mouse = mouse_in_game(viewport);
             if is_mouse_button_pressed(MouseButton::Left) {
                 if let Some(mouse) = mouse {
-                    for (index, rect) in menu_mode_rects().into_iter().enumerate() {
+                    for (index, rect) in option_slider_rects().into_iter().enumerate() {
                         if rect.contains(mouse) {
-                            mode = if index == 0 {
-                                GameMode::OnePlayer
-                            } else {
-                                GameMode::TwoPlayer
+                            let choice_count = match index {
+                                1 => GAME_SPEEDS.len(),
+                                _ => 2,
                             };
-                        }
-                    }
-                    for (index, rect) in menu_option_rects().into_iter().enumerate() {
-                        if rect.contains(mouse) {
-                            speed_index = index;
-                        }
-                    }
-                    for (index, rect) in menu_size_rects().into_iter().enumerate() {
-                        if rect.contains(mouse) {
-                            size_index = index;
+                            let choice = slider_choice_index(mouse.x, rect, choice_count);
+                            match index {
+                                0 => {
+                                    mode = if choice == 0 {
+                                        GameMode::OnePlayer
+                                    } else {
+                                        GameMode::TwoPlayer
+                                    };
+                                }
+                                1 => speed_index = choice,
+                                2 => size_index = choice,
+                                3 => rebound_angle_index = choice,
+                                4 => {
+                                    serve_mode = if choice == 0 {
+                                        ServeMode::Automatic
+                                    } else {
+                                        ServeMode::Manual
+                                    };
+                                }
+                                5 => scanlines_enabled = choice == 1,
+                                _ => unreachable!(),
+                            }
                         }
                     }
                     if start_button_rect().contains(mouse) {
                         screen = Screen::Playing;
                         ball.reset();
-                        ball.serve(GAME_SPEEDS[speed_index]);
+                        if serve_mode == ServeMode::Automatic {
+                            ball.serve(GAME_SPEEDS[speed_index]);
+                        }
                         scores = [0; 2];
+                        game_over = false;
                     }
                 }
             }
@@ -636,9 +808,19 @@ async fn main() {
                 paddle_height,
                 &Ball::new(),
                 0.2,
+                mode,
+                scanlines_enabled,
             );
             set_default_camera();
-            draw_attraction_screen(mode, speed_index, size_index, viewport);
+            draw_attraction_screen(
+                mode,
+                speed_index,
+                size_index,
+                rebound_angle_index,
+                serve_mode,
+                scanlines_enabled,
+                viewport,
+            );
         } else {
             let top_bound = TOP_DASH_HEIGHT + paddle_height / 2.0;
             let bottom_bound = GAME_HEIGHT - TOP_DASH_HEIGHT - paddle_height / 2.0;
@@ -646,20 +828,17 @@ async fn main() {
                 paddle_direction(is_key_down(KeyCode::W), is_key_down(KeyCode::S));
             right_paddle_y = (right_paddle_y + right_direction * PADDLE_SPEED * dt)
                 .clamp(top_bound, bottom_bound);
-            let second_direction = if mode == GameMode::OnePlayer {
-                if ball.y > second_paddle_y + 8.0 {
-                    1.0
-                } else if ball.y < second_paddle_y - 8.0 {
-                    -1.0
-                } else {
-                    0.0
-                }
-            } else {
-                paddle_direction(is_key_down(KeyCode::Up), is_key_down(KeyCode::Down))
-            };
-            second_paddle_y = (second_paddle_y + second_direction * PADDLE_SPEED * dt)
-                .clamp(top_bound, bottom_bound);
-            if is_key_pressed(KeyCode::Space) && !ball.moving {
+            if mode == GameMode::TwoPlayer {
+                let second_direction =
+                    paddle_direction(is_key_down(KeyCode::Up), is_key_down(KeyCode::Down));
+                second_paddle_y = (second_paddle_y + second_direction * PADDLE_SPEED * dt)
+                    .clamp(top_bound, bottom_bound);
+            }
+            if is_key_pressed(KeyCode::Space)
+                && !ball.moving
+                && !game_over
+                && serve_mode == ServeMode::Manual
+            {
                 ball.serve(GAME_SPEEDS[speed_index]);
             }
             if is_key_pressed(KeyCode::Escape) {
@@ -673,14 +852,25 @@ async fn main() {
                 paddle_height,
                 is_key_down(KeyCode::A),
                 is_key_down(KeyCode::D),
+                mode,
+                REBOUND_ANGLE_DEGREES[rebound_angle_index],
             ) {
-                scores[player.score_index()] += 1;
+                game_over = award_point(&mut scores, player, mode);
             }
-            draw_game_field(second_paddle_y, right_paddle_y, paddle_height, &ball, 1.0);
+            auto_serve_if_ready(&mut ball, serve_mode, game_over, GAME_SPEEDS[speed_index]);
+            draw_game_field(
+                second_paddle_y,
+                right_paddle_y,
+                paddle_height,
+                &ball,
+                1.0,
+                mode,
+                scanlines_enabled,
+            );
         }
         set_default_camera();
         if screen == Screen::Playing {
-            draw_scoreboard(scores, mode, viewport);
+            draw_scoreboard(scores, mode, game_over, viewport);
         }
         next_frame().await;
     }
@@ -712,6 +902,8 @@ mod tests {
                 RIGHT_MARKER_HEIGHT,
                 false,
                 false,
+                GameMode::TwoPlayer,
+                REBOUND_ANGLE_DEGREES[0],
             ),
             None
         );
@@ -747,7 +939,16 @@ mod tests {
         };
 
         assert_eq!(
-            ball.update(0.04, paddle_y, paddle_y, RIGHT_MARKER_HEIGHT, false, false),
+            ball.update(
+                0.04,
+                paddle_y,
+                paddle_y,
+                RIGHT_MARKER_HEIGHT,
+                false,
+                false,
+                GameMode::TwoPlayer,
+                REBOUND_ANGLE_DEGREES[0],
+            ),
             None
         );
 
@@ -761,7 +962,7 @@ mod tests {
     fn selected_paddle_size_changes_the_collision_window() {
         let paddle_x = WINDOW_WIDTH as f32 - RIGHT_MARKER_OFFSET;
         let paddle_y = WINDOW_HEIGHT as f32 / 2.0;
-        let mut large_paddle_hit = Ball {
+        let mut normal_paddle_hit = Ball {
             x: paddle_x - BALL_SIZE,
             y: paddle_y + 30.0,
             vx: 300.0,
@@ -785,13 +986,15 @@ mod tests {
         };
 
         let other_paddle_y = paddle_y - RIGHT_MARKER_HEIGHT;
-        large_paddle_hit.update(
+        normal_paddle_hit.update(
             0.04,
             other_paddle_y,
             paddle_y,
-            PADDLE_SIZES[2],
+            PADDLE_SIZES[1],
             false,
             false,
+            GameMode::TwoPlayer,
+            REBOUND_ANGLE_DEGREES[0],
         );
         small_paddle_miss.update(
             0.04,
@@ -800,9 +1003,11 @@ mod tests {
             PADDLE_SIZES[0],
             false,
             false,
+            GameMode::TwoPlayer,
+            REBOUND_ANGLE_DEGREES[0],
         );
 
-        assert!(large_paddle_hit.vx < 0.0);
+        assert!(normal_paddle_hit.vx < 0.0);
         assert_eq!(small_paddle_miss.missed_by, Some(Player::One));
     }
 
@@ -810,22 +1015,29 @@ mod tests {
     fn paddle_hit_position_controls_pong_style_return_angle() {
         let mut center_hit = Ball::new();
         center_hit.vx = 300.0;
-        center_hit.return_from_paddle(0.0, false, false, false);
+        center_hit.return_from_paddle(0.0, false, false, false, REBOUND_ANGLE_DEGREES[0]);
         assert!(center_hit.vx < 0.0);
         assert!(center_hit.vy.abs() < f32::EPSILON);
 
         let mut edge_hit = Ball::new();
         edge_hit.vx = 300.0;
-        edge_hit.return_from_paddle(2.0, false, false, false);
+        edge_hit.return_from_paddle(2.0, false, false, false, REBOUND_ANGLE_DEGREES[1]);
         let edge_angle = edge_hit.vy.atan2(-edge_hit.vx);
-        assert!((edge_angle - MAX_BOUNCE_ANGLE).abs() < 0.001);
+        assert!((edge_angle - REBOUND_ANGLE_DEGREES[1].to_radians()).abs() < 0.001);
+
+        let mut shallow_hit = Ball::new();
+        shallow_hit.vx = 300.0;
+        shallow_hit.return_from_paddle(1.0, false, false, false, REBOUND_ANGLE_DEGREES[0]);
+        let shallow_angle = shallow_hit.vy.atan2(-shallow_hit.vx);
+        assert!((shallow_angle - REBOUND_ANGLE_DEGREES[0].to_radians()).abs() < 0.001);
+        assert!(edge_angle > shallow_angle);
     }
 
     #[test]
     fn slice_is_fast_and_stays_flat() {
         let mut ball = Ball::new();
         ball.vx = 300.0;
-        ball.return_from_paddle(1.0, true, false, false);
+        ball.return_from_paddle(1.0, true, false, false, REBOUND_ANGLE_DEGREES[1]);
 
         assert!(ball.vx < 0.0);
         assert!(ball.vy.abs() < 60.0);
@@ -849,12 +1061,30 @@ mod tests {
         };
 
         assert_eq!(
-            ball.update(0.04, paddle_y, paddle_y, RIGHT_MARKER_HEIGHT, false, true),
+            ball.update(
+                0.04,
+                paddle_y,
+                paddle_y,
+                RIGHT_MARKER_HEIGHT,
+                false,
+                true,
+                GameMode::TwoPlayer,
+                REBOUND_ANGLE_DEGREES[0],
+            ),
             None
         );
         let curved_vy = ball.vy;
         assert_eq!(
-            ball.update(0.04, paddle_y, paddle_y, RIGHT_MARKER_HEIGHT, false, false),
+            ball.update(
+                0.04,
+                paddle_y,
+                paddle_y,
+                RIGHT_MARKER_HEIGHT,
+                false,
+                false,
+                GameMode::TwoPlayer,
+                REBOUND_ANGLE_DEGREES[0],
+            ),
             None
         );
 
@@ -887,7 +1117,9 @@ mod tests {
                 first_paddle_y,
                 RIGHT_MARKER_HEIGHT,
                 false,
-                false
+                false,
+                GameMode::TwoPlayer,
+                REBOUND_ANGLE_DEGREES[0],
             ),
             None
         );
@@ -921,7 +1153,9 @@ mod tests {
                 first_paddle_y,
                 RIGHT_MARKER_HEIGHT,
                 false,
-                false
+                false,
+                GameMode::TwoPlayer,
+                REBOUND_ANGLE_DEGREES[0],
             ),
             None
         );
@@ -937,6 +1171,8 @@ mod tests {
                 RIGHT_MARKER_HEIGHT,
                 false,
                 false,
+                GameMode::TwoPlayer,
+                REBOUND_ANGLE_DEGREES[0],
             );
             if scoring_player.is_some() {
                 break;
@@ -957,5 +1193,97 @@ mod tests {
         assert_eq!(paddle_direction(true, false), 1.0);
         assert_eq!(paddle_direction(false, true), -1.0);
         assert_eq!(paddle_direction(false, false), 0.0);
+    }
+
+    #[test]
+    fn slider_clicks_select_nearest_two_or_three_position() {
+        let rect = Rect::new(0.0, 0.0, 280.0, 88.0);
+        assert_eq!(slider_choice_index(42.0, rect, 2), 0);
+        assert_eq!(slider_choice_index(238.0, rect, 2), 1);
+        assert_eq!(slider_choice_index(140.0, rect, 3), 1);
+        assert_eq!(slider_choice_index(238.0, rect, 3), 2);
+    }
+
+    #[test]
+    fn only_automatic_serve_restarts_a_stopped_nonfinal_ball() {
+        let mut ball = Ball::new();
+        assert!(auto_serve_if_ready(
+            &mut ball,
+            ServeMode::Automatic,
+            false,
+            GAME_SPEEDS[0],
+        ));
+        assert!(ball.moving);
+        assert_eq!(ball.speed_scale, GAME_SPEEDS[0]);
+
+        ball.reset();
+        assert!(!auto_serve_if_ready(
+            &mut ball,
+            ServeMode::Manual,
+            false,
+            GAME_SPEEDS[0],
+        ));
+        assert!(!auto_serve_if_ready(
+            &mut ball,
+            ServeMode::Automatic,
+            true,
+            GAME_SPEEDS[0],
+        ));
+        assert!(!ball.moving);
+    }
+
+    #[test]
+    fn single_player_ignores_the_second_paddle() {
+        let first_paddle_y = WINDOW_HEIGHT as f32 / 2.0;
+        let second_paddle_y = first_paddle_y - RIGHT_MARKER_HEIGHT;
+        let mut ball = Ball {
+            x: PADDLE_COLUMN_X - BALL_SIZE,
+            y: second_paddle_y,
+            vx: 300.0,
+            vy: 0.0,
+            spin: 0.0,
+            speed_scale: 1.0,
+            moving: true,
+            missed_by: None,
+            trail: Vec::new(),
+        };
+
+        ball.update(
+            0.04,
+            second_paddle_y,
+            first_paddle_y,
+            RIGHT_MARKER_HEIGHT,
+            false,
+            false,
+            GameMode::OnePlayer,
+            REBOUND_ANGLE_DEGREES[0],
+        );
+
+        assert_eq!(ball.missed_by, Some(Player::One));
+        assert!(ball.vx > 0.0);
+    }
+
+    #[test]
+    fn single_player_counts_misses_and_ends_at_fifteen() {
+        let mut scores = [0; 2];
+
+        for miss in 1..=GAME_POINT_LIMIT {
+            let game_over = award_point(&mut scores, Player::One, GameMode::OnePlayer);
+            assert_eq!(scores[0], miss);
+            assert_eq!(game_over, miss == GAME_POINT_LIMIT);
+        }
+    }
+
+    #[test]
+    fn two_player_match_ends_when_either_player_reaches_fifteen() {
+        for player in [Player::One, Player::Two] {
+            let mut scores = [0; 2];
+
+            for point in 1..=GAME_POINT_LIMIT {
+                let game_over = award_point(&mut scores, player, GameMode::TwoPlayer);
+                assert_eq!(scores[player.score_index()], point);
+                assert_eq!(game_over, point == GAME_POINT_LIMIT);
+            }
+        }
     }
 }
