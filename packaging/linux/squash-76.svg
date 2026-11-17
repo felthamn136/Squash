@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <rect x="4" y="4" width="120" height="120" rx="18" fill="#080b08" stroke="#52f06a" stroke-width="4"/>
+  <path d="M24 28h80M24 48h80M24 68h80M24 88h80M24 108h80" stroke="#174b20" stroke-width="2"/>
+  <path d="M34 22v84" stroke="#52f06a" stroke-width="7"/>
+  <rect x="88" y="45" width="9" height="38" rx="2" fill="#52f06a"/>
+  <circle cx="69" cy="64" r="8" fill="#eaffeb"/>
+  <text x="64" y="119" fill="#52f06a" font-family="sans-serif" font-size="12" font-weight="bold" text-anchor="middle">SQUASH '76</text>
+</svg>

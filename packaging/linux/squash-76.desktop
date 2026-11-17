@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Squash '76
+Comment=Retro squash arcade game
+Exec=squash-76
+Icon=squash-76
+Type=Application
+Categories=Game;ArcadeGame;
+Terminal=false

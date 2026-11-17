@@ -183,3 +183,13 @@ Run it with:
 ```sh
 cargo run
 ```
+
+## Linux AppImage
+
+The x86_64 Linux AppImage is available at [dist/Squash-76-x86_64.AppImage](./dist/Squash-76-x86_64.AppImage). Launch it with:
+
+```sh
+./dist/Squash-76-x86_64.AppImage
+```
+
+The AppImage uses the host ALSA (`libasound.so.2`) and udev (`libudev.so.1`) runtime libraries.
