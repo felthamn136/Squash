@@ -178,4 +178,8 @@ These actions can also be selected using keyboard shortcuts:
 
 This project serves as both a playable retro sports game and a practical investigation into how far a free AI\-assisted development workflow can be pushed when recreating classic electronic entertainment experiences from the 1970s.
 
+Run it with:
 
+```sh
+cargo run
+```
