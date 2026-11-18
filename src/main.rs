@@ -913,16 +913,21 @@ fn draw_attraction_screen(
     joystick_unavailable: bool,
     viewport: (i32, i32, i32, i32),
     palette: Palette,
+    logo: &Texture2D,
 ) {
     let scale = viewport.2 as f32 / GAME_WIDTH;
     let center_x = viewport.0 as f32 + GAME_WIDTH / 2.0 * scale;
     let top = viewport.1 as f32;
-    draw_centered_text(
-        "SQUASH '76",
-        center_x,
-        top + 117.0 * scale,
-        58.0 * scale,
-        palette.primary,
+    let logo_width = GAME_WIDTH * 0.55 * scale;
+    draw_texture_ex(
+        logo,
+        center_x - logo_width / 2.0,
+        top + 4.0 * scale,
+        WHITE,
+        DrawTextureParams {
+            dest_size: Some(vec2(logo_width, logo_width * logo.height() / logo.width())),
+            ..Default::default()
+        },
     );
     draw_centered_text(
         "SELECT YOUR GAME",
@@ -1124,6 +1129,9 @@ async fn main() {
     let game_over_sound = load_sound_from_bytes(&game_over_tone_data)
         .await
         .expect("Failed to load the game-over and reset sound");
+    let attraction_logo = load_texture_from_bytes(include_bytes!("../assets/squash-76-logo.png"))
+        .await
+        .expect("Failed to load the attraction screen logo");
     let mut second_paddle_y = GAME_HEIGHT / 2.0 - RIGHT_MARKER_HEIGHT;
     let mut right_paddle_y = GAME_HEIGHT / 2.0;
     let mut ball = Ball::new();
@@ -1233,6 +1241,7 @@ async fn main() {
                 joystick_unavailable,
                 viewport,
                 palette,
+                &attraction_logo,
             );
         } else {
             if game_over {

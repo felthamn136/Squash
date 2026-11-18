@@ -1,5 +1,7 @@
 # Squash '76
 
+![Squash '76 logo](./assets/squash-76-logo.png)
+
 ## Project Overview
 
 This project forms part of an ongoing series of experiments exploring the capabilities of the free\-tier version of Microsoft Copilot AI in the design and development of fully functional recreations of classic 1970s video games. The objective is to evaluate how effectively AI\-assisted development can be used to generate modern implementations of vintage electronic sports and arcade\-style titles while preserving the gameplay principles, visual style, and technical limitations that defined the originals.
