@@ -1129,9 +1129,8 @@ async fn main() {
     let game_over_sound = load_sound_from_bytes(&game_over_tone_data)
         .await
         .expect("Failed to load the game-over and reset sound");
-    let attraction_logo = load_texture_from_bytes(include_bytes!("../assets/squash-76-logo.png"))
-        .await
-        .expect("Failed to load the attraction screen logo");
+    let attraction_logo =
+        Texture2D::from_file_with_format(include_bytes!("../assets/squash-76-logo.png"), None);
     let mut second_paddle_y = GAME_HEIGHT / 2.0 - RIGHT_MARKER_HEIGHT;
     let mut right_paddle_y = GAME_HEIGHT / 2.0;
     let mut ball = Ball::new();
